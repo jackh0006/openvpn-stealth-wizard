@@ -1,0 +1,24 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: gofmt -l .
+        # gofmt prints offending files; empty output = clean
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build -buildvcs=false -o wizard ./cmd/wizard
+      - if: matrix.arch == 'arm64'
+        run: GOOS=linux GOARCH=arm64 go build -buildvcs=false -o wizard-arm64 ./cmd/wizard

@@ -1,0 +1,4 @@
+# Replace each REPLACE-ME value with your own address page/QR link.
+# GitHub renders these on the Sponsor button. Custom keys allow any coin.
+github: jackh0006
+custom: ["bitcoin:REPLACE-ME-BTC-ADDRESS", "ethereum:REPLACE-ME-ETH-ADDRESS", "usdt-trc20:REPLACE-ME-USDT-ADDRESS"]
