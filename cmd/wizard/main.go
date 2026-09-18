@@ -15,7 +15,7 @@ import (
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/tui"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 func main() {
 	checkOnly := flag.Bool("check", false, "read-only health check, changes nothing")

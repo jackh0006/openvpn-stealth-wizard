@@ -182,15 +182,36 @@ func PortOwner(port int) Owner {
 		if o.Process == "" {
 			o.Process = "unknown process"
 		}
-		if u, err := Output("systemctl", "status", o.PID); err == nil {
-			for _, l := range strings.Split(u, "\n") {
-				if strings.Contains(l, ".service") {
-					f := strings.Fields(strings.TrimSpace(l))
-					if len(f) > 0 {
-						o.Unit = strings.Trim(f[0], "●")
-						break
+		// Best unit detection: ps -o unit= gives the systemd unit directly.
+		if o.PID != "" {
+			if u, err := Output("ps", "-o", "unit=", "-p", o.PID); err == nil {
+				if t := strings.TrimSpace(u); t != "" && t != "-" {
+					o.Unit = t
+				}
+			}
+		}
+		if o.Unit == "" && o.PID != "" {
+			if u, err := Output("systemctl", "status", o.PID); err == nil {
+				for _, l := range strings.Split(u, "\n") {
+					if strings.Contains(l, ".service") {
+						f := strings.Fields(strings.TrimSpace(l))
+						if len(f) > 0 {
+							o.Unit = strings.Trim(f[0], "●")
+							break
+						}
 					}
 				}
+			}
+		}
+		// Fallback guesses for known daemons when systemd unit is not exposed.
+		if o.Unit == "" {
+			switch o.Process {
+			case "nginx":
+				o.Unit = "nginx.service"
+			case "openvpn":
+				o.Unit = "openvpn-server@server.service"
+			case "stunnel", "stunnel4":
+				o.Unit = "stunnel4.service"
 			}
 		}
 		return o
@@ -202,6 +223,8 @@ func portInUse(port int) bool { return PortOwner(port).Process != "" }
 
 // FreePort stops the service owning a port so the wizard can use it.
 // It refuses port 22 / sshd unconditionally and keeps file backups.
+// When the owner is this wizard's own OpenVPN, the caller should confirm
+// first (the wizard always asks in TUI review before calling this).
 func FreePort(ctx context.Context, port int, log *logx.Logger) error {
 	if port == 22 {
 		return fmt.Errorf("refusing to free port 22 (SSH keeps you connected)")
@@ -214,17 +237,35 @@ func FreePort(ctx context.Context, port int, log *logx.Logger) error {
 	if o.Process == "sshd" || strings.Contains(o.Unit, "ssh") {
 		return fmt.Errorf("refusing to free %s (SSH keeps you connected)", o.String())
 	}
-	if o.Unit != "" {
-		unit := o.Unit
-		if i := strings.Index(unit, " "); i >= 0 {
-			unit = unit[:i]
-		}
+	// Resolve unit to stop. PortOwner already fills fallbacks for nginx/openvpn.
+	unit := o.Unit
+	if i := strings.Index(unit, " "); i >= 0 {
+		unit = unit[:i]
+	}
+	if unit == "" && o.PID != "" {
+		return fmt.Errorf("port %d held by %s: no systemd unit found, kill pid %s manually", port, o.Process, o.PID)
+	}
+	if unit != "" {
 		log.Info("%s", "stopping "+unit+" (files kept, service disabled)")
 		if err := Run(ctx, log, "systemctl", "stop", unit); err != nil {
 			return err
 		}
 		_ = Run(ctx, log, "systemctl", "disable", unit)
 		time.Sleep(2 * time.Second)
+		// For templated openvpn-server@*, also stop any other instances that
+		// might still hold the same port (discovered via ServerDir).
+		if strings.HasPrefix(unit, "openvpn-server@") {
+			if entries, err := os.ReadDir("/etc/openvpn/server"); err == nil {
+				for _, e := range entries {
+					if strings.HasSuffix(e.Name(), ".conf") {
+						other := "openvpn-server@" + strings.TrimSuffix(e.Name(), ".conf")
+						if other != unit {
+							_ = Run(ctx, log, "systemctl", "stop", other)
+						}
+					}
+				}
+			}
+		}
 	}
 	if still := PortOwner(port); still.Process != "" {
 		return fmt.Errorf("port %d still held by %s after stop; kill it manually", port, still.String())

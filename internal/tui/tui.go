@@ -205,7 +205,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.portWarn = "could not free port: " + msg.err.Error()
 		} else {
 			m.portWarn = ""
-			m.mgMsg = ""
+			if msg.wantRun {
+				m.steps = steps.All()
+				m.cur = 0
+				m.cancelAsk = false
+				m.cancelled = false
+				m.viewport = viewport.New(100, 20)
+				m.stage = stageRun
+				return m, tea.Batch(waitLog(m.log), m.execStep(0))
+			}
+			m.portWarn = "port is free now — press enter to start install"
 		}
 		return m, nil
 	}
@@ -365,6 +374,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus = (m.focus + len(m.inputs) - 1) % len(m.inputs)
 			m.inputs[m.focus].Focus()
 			return m, nil
+		case "ctrl+g":
+			// Suggest a strong password for the focused password field.
+			if m.focus == 4 {
+				p := suggestPassword()
+				m.inputs[4].SetValue(p)
+				m.detectNote = "suggested password filled — you can keep it or type your own"
+			}
+			return m, nil
 		case "ctrl+d":
 			if m.cfg.Mode == cfg.ModeDomain {
 				m.cfg.Mode = cfg.ModeIP
@@ -383,9 +400,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !m.validateForm() {
 				return m, nil
 			}
+			// Auto-offer suggested password if empty/insecure at final submit.
+			if len(m.cfg.VPNPass) < 8 {
+				m.inputs[4].SetValue(suggestPassword())
+				m.applyForm()
+				m.detectNote = "filled a strong password for you — press enter again to confirm"
+				m.fieldErrs = [6]string{}
+				m.errMsg = ""
+				m.focus = 4
+				m.inputs[4].Focus()
+				return m, nil
+			}
 			m.cfg.SaveLast()
 			if r := (steps.Conflicts{}.Check(m.cfg)); !r.OK {
-				m.portWarn = r.Detail + " — change the port or resolve it first"
+				owner := steps.PortOwner(m.cfg.Port)
+				if owner.Process == "openvpn" || owner.Process == "openvpn-server" || owner.Process == "unknown process" || owner.Unit != "" {
+					m.portWarn = r.Detail + " — press f to free it (always asks before touching it)"
+				} else {
+					m.portWarn = r.Detail + " — press f to free it (files kept, service disabled)"
+				}
 			} else {
 				m.portWarn = ""
 			}
@@ -399,6 +432,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case stageReview:
 		switch k {
 		case "enter", "y":
+			// Guard: port still taken? Ask before freeing, then continue.
+			if m.portWarn != "" {
+				o := steps.PortOwner(m.cfg.Port)
+				m.prompt = promptState{
+					active: true,
+					title:  fmt.Sprintf("Port %d is held by %s. Free it now? (y/n)", m.cfg.Port, o.String()),
+					action: "confirm-free-port",
+					arg:    "",
+				}
+				ti := textinput.New()
+				ti.Placeholder = "y or n"
+				ti.CharLimit = 4
+				ti.Focus()
+				m.prompt.input = ti
+				m.stage = stagePrompt
+				return m, nil
+			}
 			m.steps = steps.All()
 			m.cur = 0
 			m.cancelAsk = false
@@ -408,7 +458,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(waitLog(m.log), m.execStep(0))
 		case "f":
 			if m.portWarn != "" {
-				return m, m.freePortCmd()
+				o := steps.PortOwner(m.cfg.Port)
+				m.prompt = promptState{
+					active: true,
+					title:  fmt.Sprintf("Free port %d held by %s? (y/n)", m.cfg.Port, o.String()),
+					action: "confirm-free-port-then-run",
+					arg:    "",
+				}
+				ti := textinput.New()
+				ti.Placeholder = "y or n"
+				ti.CharLimit = 4
+				ti.Focus()
+				m.prompt.input = ti
+				m.stage = stagePrompt
+				return m, nil
 			}
 			return m, nil
 		case "esc", "n":
@@ -444,16 +507,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-type freePortMsg struct{ err error }
+type freePortMsg struct {
+	err     error
+	wantRun bool
+}
 
-func (m Model) freePortCmd() tea.Cmd {
+func (m Model) freePortCmd() tea.Cmd { return m.freePortCmdWithFollow(false) }
+
+func (m Model) freePortCmdWithFollow(wantRun bool) tea.Cmd {
 	return func() tea.Msg {
 		log := logx.New()
 		err := steps.FreePort(context.Background(), m.cfg.Port, log)
-		for _, ln := range log.Lines() {
-			_ = ln
-		}
-		return freePortMsg{err: err}
+		_ = log
+		return freePortMsg{err: err, wantRun: wantRun}
 	}
 }
 
@@ -502,7 +568,7 @@ func (m Model) handleManageKey(k string) (tea.Model, tea.Cmd) {
 			m.mgIdx++
 		}
 		m.mgMsg = ""
-	case "r":
+	case "1", "r":
 		if s, ok := m.mgCurrent(); ok {
 			if err := manage.Restart(s.Name); err != nil {
 				m.mgMsg = "restart failed: " + err.Error()
@@ -511,7 +577,7 @@ func (m Model) handleManageKey(k string) (tea.Model, tea.Cmd) {
 			}
 			return m.refreshManage(m.mgMsg), nil
 		}
-	case "c":
+	case "2", "c":
 		if s, ok := m.mgCurrent(); ok {
 			cls := manage.ConnectedClients(s.Name)
 			if len(cls) == 0 {
@@ -520,34 +586,56 @@ func (m Model) handleManageKey(k string) (tea.Model, tea.Cmd) {
 				m.mgMsg = s.Name + " clients: " + strings.Join(cls, ", ")
 			}
 		}
-	case "l":
-		m.mgMsg = manage.TailLog(8)
-	case "u":
+	case "3", "l":
+		m.mgMsg = manage.TailLog(12)
+	case "4", "u":
 		users := manage.ListUsers()
 		if len(users) == 0 {
-			m.mgMsg = "no VPN users yet — press a to add one"
+			m.mgMsg = "no VPN users yet — press 5 to add one"
 		} else {
 			m.mgMsg = "users: " + strings.Join(users, ", ")
 		}
-	case "a":
+	case "5", "a":
 		return m.askPrompt("new username", "add-user", "", false), nil
-	case "p":
+	case "6", "p":
 		return m.askPrompt("username to set password for", "set-pass-u", "", false), nil
-	case "d":
+	case "7", "d":
 		return m.askPrompt("username to delete", "del-user", "", false), nil
-	case "x":
+	case "8", "v":
+		return m.askPrompt("client certificate name to revoke", "revoke", "", false), nil
+	case "9", "x":
 		if s, ok := m.mgCurrent(); ok {
 			return m.askPrompt("type "+s.Name+" to delete this server FOREVER (backup kept)", "del-server", s.Name, false), nil
 		}
-	case "v":
-		return m.askPrompt("client certificate name to revoke", "revoke", "", false), nil
-	case "esc", "q":
+	case "0", "esc", "q":
 		m.stage = stageMode
 	}
 	return m, nil
 }
 
 func (m Model) handlePromptKey(k string, msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Special handling for port-free confirmation prompt (used from review).
+	if m.prompt.action == "confirm-free-port" || m.prompt.action == "confirm-free-port-then-run" {
+		switch k {
+		case "esc":
+			m.prompt = promptState{}
+			m.stage = stageReview
+			return m, nil
+		case "enter":
+			val := strings.TrimSpace(strings.ToLower(m.prompt.input.Value()))
+			act := m.prompt.action
+			m.prompt = promptState{}
+			m.stage = stageReview
+			if val == "y" || val == "yes" {
+				return m, m.freePortCmdWithFollow(act == "confirm-free-port-then-run")
+			}
+			m.portWarn = "port still taken — free it with f or change the port"
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.prompt.input, cmd = m.prompt.input.Update(msg)
+		return m, cmd
+	}
 	switch k {
 	case "esc":
 		m.prompt = promptState{}
@@ -564,19 +652,22 @@ func (m Model) handlePromptKey(k string, msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mgMsg = "username empty, nothing done"
 				return m, nil
 			}
-			return m.askPrompt("password for "+val+" (min 8 chars)", "add-pass", val, true), nil
+			pw := suggestPassword()
+			m.mgMsg = "suggested password for " + val + ": " + pw + " — use p to change it, or a again to set this"
+			return m.askPrompt("password for "+val+" (min 8 chars, ctrl+g to fill suggestion: "+pw+")", "add-pass", val, true), nil
 		case "add-pass":
 			if err := manage.SetUser(arg, val); err != nil {
 				m.mgMsg = "add user failed: " + err.Error()
 			} else {
-				m.mgMsg = "user " + arg + " ready"
+				m.mgMsg = "user " + arg + " ready — download: scp root@YOUR_HOST:\"" + manage.BundleRoot + "/" + arg + ".ovpn\" ./"
 			}
 		case "set-pass-u":
 			if val == "" {
 				m.mgMsg = "username empty, nothing done"
 				return m, nil
 			}
-			return m.askPrompt("new password for "+val, "set-pass", val, true), nil
+			pw := suggestPassword()
+			return m.askPrompt("new password for "+val+" (suggested: "+pw+")", "set-pass", val, true), nil
 		case "set-pass":
 			if err := manage.SetUser(arg, val); err != nil {
 				m.mgMsg = "password change failed: " + err.Error()
@@ -636,7 +727,11 @@ func (m Model) View() string {
 		sb.WriteString("\n")
 		labels := fieldLabels()
 		for i := range m.inputs {
-			sb.WriteString(labels[i] + "\n" + m.inputs[i].View() + "\n")
+			hint := ""
+			if i == 4 {
+				hint = "  (ctrl+g suggests a strong password)"
+			}
+			sb.WriteString(labels[i] + hint + "\n" + m.inputs[i].View() + "\n")
 			if m.fieldErrs[i] != "" {
 				sb.WriteString(errStyle.Render("  ⚠ "+m.fieldErrs[i]) + "\n")
 			}
@@ -645,7 +740,7 @@ func (m Model) View() string {
 		if m.errMsg != "" {
 			sb.WriteString(errStyle.Render("⚠ "+m.errMsg) + "\n\n")
 		}
-		sb.WriteString(helpStyle.Render("type to edit • tab next field • enter continue • ") + back)
+		sb.WriteString(helpStyle.Render("type to edit • tab next field • ctrl+g suggest password • enter continue • ") + back)
 	case stageReview:
 		sb.WriteString("Plan preview — I will do exactly this:\n\n")
 		for i, s := range steps.All() {
@@ -670,13 +765,15 @@ func (m Model) View() string {
 			if s.Active {
 				state = "running"
 			}
-			sb.WriteString(fmt.Sprintf("%s%s  port %d  %s  %s  clients:%d  bundle:%v\n",
+			sb.WriteString(fmt.Sprintf("%s%s  port %d  %-18s  %-8s  clients:%d  bundle:%v\n",
 				marker, s.Name, s.Port, s.Subnet, state, len(s.Clients), s.Bundle))
 		}
 		if m.mgMsg != "" {
 			sb.WriteString("\n" + m.mgMsg + "\n")
 		}
-		sb.WriteString(helpStyle.Render("\n↑/↓ pick • r restart • c clients • l logs • u users • a add-user • p set-password • d del-user • v revoke-cert • x delete-server • ") + back)
+		sb.WriteString(helpStyle.Render("\nPick a server with ↑/↓, then choose:\n"))
+		sb.WriteString(helpStyle.Render("  1 restart  2 clients  3 logs  4 list-users  5 add-user  6 change-password  7 delete-user  8 revoke-cert  9 delete SERVER (asks name, backup kept)  • 0/esc back\n"))
+		sb.WriteString(helpStyle.Render("  Single-key shortcuts still work: r c l u a p d v x — but numbers are easier to read\n"))
 	case stagePrompt:
 		sb.WriteString(m.prompt.title + "\n\n" + m.prompt.input.View() + "\n\n")
 		sb.WriteString(helpStyle.Render("enter confirm • ") + back)
@@ -695,7 +792,12 @@ func (m Model) View() string {
 			}
 			sb.WriteString(fmt.Sprintf("  %s %-28s %s\n", mark, r.Name, whyStyle.Render(r.Detail)))
 		}
-		sb.WriteString("\n" + selStyle.Render("Done. Import the .ovpn, user "+m.cfg.VPNUser+"."))
+		sb.WriteString("\n" + selStyle.Render("Done. Server "+m.cfg.Host+":"+strconv.Itoa(m.cfg.Port)+" — user "+m.cfg.VPNUser+" ready."))
+		ovpn := manage.BundleRoot + "/" + m.cfg.VPNUser + ".ovpn"
+		sb.WriteString("\n\n" + warnStyle.Render("Download the phone/laptop file:") + "\n")
+		sb.WriteString(fmt.Sprintf("  scp root@%s:\"%s\" ./%s.ovpn\n", m.cfg.Host, ovpn, m.cfg.VPNUser))
+		sb.WriteString(fmt.Sprintf("  Then on the phone: OpenVPN app → Import %s.ovpn → user %s → password you set.\n", m.cfg.VPNUser, m.cfg.VPNUser))
+		sb.WriteString(warnStyle.Render("  Need help?  ") + "wizard --help  •  wizard --manage list\n")
 		sb.WriteString(helpStyle.Render("\nenter quit • ") + back)
 	}
 	return sb.String()
@@ -706,6 +808,17 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func suggestPassword() string {
+	const letters = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+	b := make([]byte, 12)
+	for i := range b {
+		b[i] = letters[int(time.Now().UnixNano()+int64(i*7919))%len(letters)]
+		// tiny jitter so two quick calls differ
+		time.Sleep(time.Microsecond)
+	}
+	return string(b)
 }
 
 // RunHeadless executes install without a TTY (flags path).

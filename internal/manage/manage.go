@@ -71,8 +71,17 @@ func Discover() []Server {
 		}
 		s.Active = serviceActive("openvpn-server@" + name)
 		s.Clients = ConnectedClients(name)
-		s.Bundle = fileExists(filepath.Join(BundleRoot, name+".ovpn")) ||
-			fileExists(filepath.Join(BundleRoot, "01-JH.ovpn"))
+		s.Bundle = fileExists(filepath.Join(BundleRoot, name+".ovpn"))
+		if !s.Bundle {
+			if entries, _ := os.ReadDir(BundleRoot); len(entries) > 0 {
+				for _, e := range entries {
+					if strings.HasSuffix(e.Name(), ".ovpn") {
+						s.Bundle = true
+						break
+					}
+				}
+			}
+		}
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

@@ -1,5 +1,15 @@
 # Changelog — newest on top, plain words.
 
+## v0.2.1 (2026-09-18)
+- Fixed: port freeing now finds the real systemd unit (even for openvpn),
+  always asks before touching a self-owned port, one-press free + continue
+- Fixed: manage now shows a clear numbered menu (1-9) with delete on 9,
+  bundle detection no longer hardcoded to one username
+- New: suggested password (ctrl+g) in the form and after add-user, with
+  auto-fill if left empty
+- New: done screen prints exact scp download line and phone import guide
+  so beginners know how to get the .ovpn
+
 ## v0.2.0 (2026-09-18)
 - Port takeover: wizard names the process holding your port and offers to
   free it (TUI `f` key, headless `--free-port`); port 22/SSH always refused
