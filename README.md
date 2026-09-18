@@ -10,18 +10,30 @@ login, Cloudflare DNS, and an import-ready `.ovpn` with DNS-bypass fallback.
 
 Born from a real deployment runbook. Every lesson is now code.
 
-## Installation (pick your server's chip)
+## Installation (one line, like a 5-year-old does it)
+
+On your Ubuntu server, as root, paste this **one line** and press Enter:
 
 ```sh
-# amd64 (most VPS servers)
-curl -sSL -o wizard \
-  https://github.com/jackh0006/openvpn-stealth-wizard/releases/latest/download/wizard-linux-amd64
-# arm64 (Ampere / Apple-silicon VMs / Raspberry Pi servers)
-curl -sSL -o wizard \
-  https://github.com/jackh0006/openvpn-stealth-wizard/releases/latest/download/wizard-linux-arm64
+curl -sSL https://raw.githubusercontent.com/jackh0006/openvpn-stealth-wizard/main/install.sh | sudo bash
+```
 
-chmod +x wizard
-./wizard --version   # → openvpn-stealth-wizard 0.1.0
+That's it. It finds your chip (amd64/arm64), downloads the newest version,
+installs it as `wizard`, and proves it works. Then:
+
+```sh
+sudo wizard          # pretty guided setup (recommended)
+wizard --help        # every command with examples
+```
+
+Manual way (if you don't trust pipes):
+
+```sh
+# amd64 (most VPS servers) — file inside is named `wizard`
+curl -sSL -o vpn.tar.gz https://github.com/jackh0006/openvpn-stealth-wizard/releases/latest/download/openvpn-stealth-wizard_0.1.0_linux_amd64.tar.gz
+# arm64 (Ampere / Pi servers): same link with _arm64.tar.gz
+tar xzf vpn.tar.gz && chmod +x wizard && sudo mv wizard /usr/local/bin/
+wizard --version
 ```
 
 > Verify checksums against `checksums.txt` from the same release page.
@@ -101,13 +113,21 @@ Linux amd64 + arm64 only (v1).
 
 ## Donate (crypto)
 
-If this wizard saved you an evening, tips keep the releases coming:
+If this wizard saved you an evening, tips keep the releases coming.
+Same wallets as my other projects:
 
 | Coin | Address |
 | ---- | ------- |
-| BTC  | `REPLACE-ME-BTC-ADDRESS` |
-| ETH  | `REPLACE-ME-ETH-ADDRESS` |
-| USDT (TRC-20) | `REPLACE-ME-USDT-ADDRESS` |
+| BTC | `bc1q8t0fn2yrsy4lh3m0pz34uj27t8vxjeavkjym83` |
+| DOGE | `D6ZdMQ7mHGGmuH9prpZ2zjpnG5Q3WVRDtC` |
+| ETH | `0xdad428900a4359be8f76b3062df34211582e09eb` |
+| USDT (ERC-20) | `0xdad428900a4359be8f76b3062df34211582e09eb` |
+| BNB / USDT (BEP-20) | `0xdad428900a4359be8f76b3062df34211582e09eb` |
+| TRX / USDT (TRC-20) | `TMpb6RNTuGNM1eTakm9kjds1mRTPYYJesf` |
+| SOL / USDT+USDC (SPL) | `BDCCrRez1yD1RpkAtiqKKDk3BfxPD8P7nkL26jCYrzgL` |
+| XRP | `rNUAhaATFLvosdu9m9M95bupRBtZ8eqpj9` |
+| TON | `UQCu6-3yGyQ5dzvcCxr2gobuvx5ddbS9EC690qtey92P5_wX` |
+| LTC | `ltc1q2gs89cfy3mumr7gu9w0zl9rllf80q67m5rmma8` |
 
 Verify addresses against `.github/FUNDING.yml` (or the Sponsor button) —
 never trust an address pasted anywhere else.

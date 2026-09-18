@@ -11,7 +11,7 @@ import (
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/tui"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 func main() {
 	checkOnly := flag.Bool("check", false, "read-only health check, changes nothing")
@@ -19,6 +19,7 @@ func main() {
 	nonInteractive := flag.Bool("non-interactive", false, "no TUI; use flags")
 	yes := flag.Bool("yes", false, "apply without asking (with --non-interactive)")
 	ver := flag.Bool("version", false, "print version")
+	help := flag.Bool("help", false, "print kid-simple usage and exit")
 	mode := flag.String("mode", "domain", "ip or domain")
 	host := flag.String("host", "", "server IP or domain")
 	fallback := flag.String("fallback", "", "fallback IP (DNS bypass)")
@@ -30,6 +31,44 @@ func main() {
 
 	if *ver {
 		fmt.Println("openvpn-stealth-wizard " + version)
+		return
+	}
+
+	if *help {
+		fmt.Print(`openvpn-stealth-wizard: stealth VPN on port 443, guided like a friend.
+
+START HERE (pick one):
+  sudo wizard                  pretty step-by-step mode (recommended)
+  wizard --check ...           look only, changes nothing (safe anywhere)
+
+EXAMPLES:
+  # health check (read-only)
+  wizard --check --mode domain --host vpn.example.com \
+    --user alice --pass 'secret' --email admin@example.com
+
+  # full install, no questions
+  sudo wizard --non-interactive --yes \
+    --mode domain --host vpn.example.com --fallback 203.0.113.10 \
+    --port 443 --user alice --pass 'S3cure!!' --email admin@example.com
+
+  # IP-only server (no domain, no email needed)
+  sudo wizard --non-interactive --yes \
+    --mode ip --host 203.0.113.10 --port 443 --user alice --pass 'S3cure!!'
+
+  # fix what's missing, keep what's fine
+  sudo wizard --non-interactive --yes --fix ... (same flags as install)
+
+FLAGS:
+  --check            health check only, exit 0 = healthy, 1 = sick
+  --fix              re-apply missing pieces only
+  --non-interactive  no pretty screens, use flags (needs --yes to change anything)
+  --yes              I understand, change the system
+  --mode ip|domain   --host NAME --fallback IP --port N (default 443)
+  --user NAME --pass SECRET --email ADDR
+  --version          print version and exit
+
+EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
+`)
 		return
 	}
 
