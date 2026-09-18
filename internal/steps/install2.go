@@ -110,6 +110,9 @@ func (Network) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) error 
 		_ = Run(ctx, log, "ufw", "route", "allow", "in", "on", "tun0", "out", "on", "enp1s0", "from", c.Subnet)
 		_ = Run(ctx, log, "ufw", "route", "allow", "in", "on", "enp1s0", "out", "on", "tun0", "to", c.Subnet)
 	}
+	// Carrier-proof: clamp MSS so even stale bundles (1500) cannot stall on LTE.
+	_ = Run(ctx, log, "sh", "-c", "iptables -t mangle -C FORWARD -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null || iptables -t mangle -A FORWARD -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200")
+	_ = Run(ctx, log, "sh", "-c", "iptables -t mangle -C FORWARD -i tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null || iptables -t mangle -A FORWARD -i tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200")
 	unit := `[Unit]
 Description=Restore VPN NAT rules (wizard)
 After=network.target
@@ -217,8 +220,8 @@ verb 3
 sndbuf 0
 rcvbuf 0
 tcp-nodelay
-tun-mtu 1500
-mssfix 1400
+tun-mtu 1400
+mssfix 1200
 keepalive 10 60
 explicit-exit-notify 0
 <ca>

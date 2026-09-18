@@ -19,6 +19,14 @@ const (
 	ModeDomain Mode = "domain"
 )
 
+// DNSPresets is the Big 4 + custom choice.
+var DNSPresets = map[string][2]string{
+	"cloudflare": {"1.1.1.1", "1.0.0.1"},
+	"google":     {"8.8.8.8", "8.8.4.4"},
+	"quad9":      {"9.9.9.9", "149.112.112.112"},
+	"adguard":    {"94.140.14.14", "94.140.15.15"},
+}
+
 // Config holds every wizard input. It mirrors the runbook we validated
 // on a live Ubuntu 22.04 VPS.
 type Config struct {
@@ -32,6 +40,8 @@ type Config struct {
 	Email      string // Let's Encrypt contact (domain mode)
 	Subnet     string // e.g. 10.8.0.0/24
 	OutDir     string // client bundle dir, e.g. /root/Open Code/OpenVPN
+	DNS1       string // primary pushed DNS
+	DNS2       string // secondary pushed DNS
 }
 
 func Defaults() Config {
@@ -40,6 +50,8 @@ func Defaults() Config {
 		Port:   443,
 		Subnet: "10.8.0.0/24",
 		OutDir: "/root/Open Code/OpenVPN",
+		DNS1:   "1.1.1.1",
+		DNS2:   "1.0.0.1",
 	}
 }
 
@@ -56,6 +68,12 @@ func (c Config) Validate() error {
 	}
 	if _, _, err := net.ParseCIDR(c.Subnet); err != nil {
 		return fmt.Errorf("bad subnet %q: %w", c.Subnet, err)
+	}
+	if c.DNS1 != "" && net.ParseIP(c.DNS1) == nil {
+		return fmt.Errorf("dns1 %q is not an IP", c.DNS1)
+	}
+	if c.DNS2 != "" && net.ParseIP(c.DNS2) == nil {
+		return fmt.Errorf("dns2 %q is not an IP", c.DNS2)
 	}
 	switch c.Mode {
 	case ModeIP:

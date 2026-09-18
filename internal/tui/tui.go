@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -75,7 +76,7 @@ type Model struct {
 	cfg        cfg.Config
 	inputs     []textinput.Model
 	focus      int
-	fieldErrs  [6]string
+	fieldErrs  [7]string
 	errMsg     string
 	detectNote string
 	portWarn   string
@@ -120,7 +121,27 @@ type runDoneMsg struct{}
 type detectIPMsg struct{ ip string }
 
 func fieldLabels() []string {
-	return []string{"Domain or IP", "Fallback IP", "Port", "VPN username", "VPN password", "Email"}
+	return []string{"Domain or IP", "Fallback IP", "Port", "VPN username", "VPN password", "DNS choice", "Email"}
+}
+
+func dnsNames() []string {
+	return []string{"cloudflare (1.1.1.1)", "google (8.8.8.8)", "quad9 (9.9.9.9)", "adguard (94.140.14.14)", "custom"}
+}
+
+func applyDNSChoice(c *cfg.Config, choice int, custom string) {
+	if choice < 4 {
+		keys := []string{"cloudflare", "google", "quad9", "adguard"}
+		if p, ok := cfg.DNSPresets[keys[choice]]; ok {
+			c.DNS1, c.DNS2 = p[0], p[1]
+			return
+		}
+	}
+	parts := strings.Fields(custom)
+	if len(parts) >= 2 {
+		c.DNS1, c.DNS2 = parts[0], parts[1]
+	} else if len(parts) == 1 {
+		c.DNS1, c.DNS2 = parts[0], ""
+	}
 }
 
 func New() Model {
@@ -131,14 +152,24 @@ func New() Model {
 			c = last
 		}
 	}
-	vals := []string{c.Host, c.Fallback, strconv.Itoa(c.Port), c.VPNUser, "", "admin@example.com"}
+	dnsVal := "cloudflare (1.1.1.1)"
+	if c.DNS1 == "8.8.8.8" {
+		dnsVal = "google (8.8.8.8)"
+	} else if c.DNS1 == "9.9.9.9" {
+		dnsVal = "quad9 (9.9.9.9)"
+	} else if c.DNS1 == "94.140.14.14" {
+		dnsVal = "adguard (94.140.14.14)"
+	} else if c.DNS1 != "1.1.1.1" && c.DNS1 != "" {
+		dnsVal = c.DNS1 + " " + c.DNS2
+	}
+	vals := []string{c.Host, c.Fallback, strconv.Itoa(c.Port), c.VPNUser, "", dnsVal, "admin@example.com"}
 	if c.Host == "" {
 		vals[0] = "vpn.example.com"
 	}
 	if c.Email != "" {
-		vals[5] = c.Email
+		vals[6] = c.Email
 	}
-	inputs := make([]textinput.Model, 6)
+	inputs := make([]textinput.Model, 7)
 	for i := range inputs {
 		ti := textinput.New()
 		ti.Placeholder = fieldLabels()[i]
@@ -286,13 +317,31 @@ func (m *Model) applyForm() {
 	}
 	c.VPNUser = strings.TrimSpace(m.inputs[3].Value())
 	c.VPNPass = m.inputs[4].Value()
-	c.Email = strings.TrimSpace(m.inputs[5].Value())
+	dnsChoice := strings.ToLower(strings.TrimSpace(m.inputs[5].Value()))
+	switch {
+	case strings.HasPrefix(dnsChoice, "cloudflare"):
+		c.DNS1, c.DNS2 = cfg.DNSPresets["cloudflare"][0], cfg.DNSPresets["cloudflare"][1]
+	case strings.HasPrefix(dnsChoice, "google"):
+		c.DNS1, c.DNS2 = cfg.DNSPresets["google"][0], cfg.DNSPresets["google"][1]
+	case strings.HasPrefix(dnsChoice, "quad9"):
+		c.DNS1, c.DNS2 = cfg.DNSPresets["quad9"][0], cfg.DNSPresets["quad9"][1]
+	case strings.HasPrefix(dnsChoice, "adguard"):
+		c.DNS1, c.DNS2 = cfg.DNSPresets["adguard"][0], cfg.DNSPresets["adguard"][1]
+	default:
+		parts := strings.Fields(m.inputs[5].Value())
+		if len(parts) >= 2 {
+			c.DNS1, c.DNS2 = parts[0], parts[1]
+		} else if len(parts) == 1 && strings.Contains(parts[0], ".") {
+			c.DNS1, c.DNS2 = parts[0], ""
+		}
+	}
+	c.Email = strings.TrimSpace(m.inputs[6].Value())
 	m.cfg = c
 }
 
 // validateForm maps problems onto individual fields.
 func (m *Model) validateForm() bool {
-	m.fieldErrs = [6]string{}
+	m.fieldErrs = [7]string{}
 	m.errMsg = ""
 	c := m.cfg
 	bad := func(i int, msg string) {
@@ -306,7 +355,7 @@ func (m *Model) validateForm() bool {
 			bad(1, "not an IP address")
 		}
 		if !strings.Contains(c.Email, "@") {
-			bad(5, "email needed for the free certificate")
+			bad(6, "email needed for the free certificate")
 		}
 	} else {
 		if !validIP(c.Host) {
@@ -321,6 +370,15 @@ func (m *Model) validateForm() bool {
 	}
 	if !c.NoPassword && len(c.VPNPass) < 8 {
 		bad(4, "at least 8 characters (or ctrl+n for cert-only)")
+	}
+	dnsRaw := strings.TrimSpace(m.inputs[5].Value())
+	if dnsRaw != "" && !strings.HasPrefix(strings.ToLower(dnsRaw), "cloudflare") && !strings.HasPrefix(strings.ToLower(dnsRaw), "google") && !strings.HasPrefix(strings.ToLower(dnsRaw), "quad9") && !strings.HasPrefix(strings.ToLower(dnsRaw), "adguard") {
+		for _, p := range strings.Fields(dnsRaw) {
+			if net.ParseIP(p) == nil {
+				bad(5, "use: cloudflare/google/quad9/adguard or two IPs")
+				break
+			}
+		}
 	}
 	for _, e := range m.fieldErrs {
 		if e != "" {
@@ -439,7 +497,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.inputs[4].SetValue(suggestPassword())
 				m.applyForm()
 				m.detectNote = "filled a strong password for you — press enter again to confirm"
-				m.fieldErrs = [6]string{}
+				m.fieldErrs = [7]string{}
 				m.errMsg = ""
 				m.focus = 4
 				m.inputs[4].Focus()

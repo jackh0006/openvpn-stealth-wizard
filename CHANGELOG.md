@@ -1,5 +1,11 @@
 # Changelog — newest on top, plain words.
 
+## v0.4.0 (2026-09-18)
+- Synced to VPS-tasted working state: tun-mtu 1400 / mssfix 1200 on server + bundles
+- New: DNS choice (cloudflare/google/quad9/adguard/custom) with TUI field + headless --dns
+- New: TCPMSS clamp on tun0 both ways (fixes stale-phone files) + cert-only mode (--no-password/--gen-pass)
+- Fixed: manage delete verified + live log streaming, port freeRetry
+
 ## v0.3.2 (2026-09-18)
 - Fixed: manage delete now verified (conf gone or error) + daemon-reload, with live log backup path
 - Smart: self-owned 443 handling already in 0.3.1, now with robust ps-based unit detection + retry
