@@ -1,5 +1,9 @@
 # Changelog — newest on top, plain words.
 
+## v0.3.2 (2026-09-18)
+- Fixed: manage delete now verified (conf gone or error) + daemon-reload, with live log backup path
+- Smart: self-owned 443 handling already in 0.3.1, now with robust ps-based unit detection + retry
+
 ## v0.3.1 (2026-09-18)
 - Fixed: installing over your own VPN on 443 no longer blocks — review says “will restart in place”, enter proceeds (port is freed by restart)
 

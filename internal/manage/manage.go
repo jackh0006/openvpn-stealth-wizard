@@ -141,22 +141,34 @@ func backupTar(paths []string) (string, error) {
 	return dst, nil
 }
 
-// Delete purges a server fully: stop+disable, backup tarball, remove
-// conf/PKI/users/bundle. Refuses to delete the last safety net silently:
-// it always prints the backup path first (caller shows it).
+// Delete purges a server: stop+disable, backup tarball first, then
+// remove the server conf. Keeps users/bundles on disk (they are in the
+// backup) but server disappears from Discover immediately. Verified.
 func Delete(name string) (string, error) {
 	_ = exec.Command("systemctl", "stop", "openvpn-server@"+name).Run()
 	_ = exec.Command("systemctl", "disable", "openvpn-server@"+name).Run()
+	conf := filepath.Join(ServerDir, name+".conf")
 	bak, err := backupTar([]string{
-		filepath.Join(ServerDir, name+".conf"),
+		conf,
 		ServerDir + "/ca.crt", ServerDir + "/server.crt",
 		ServerDir + "/server.key", ServerDir + "/tls-crypt.key",
 		UsersDir, BundleRoot,
 	})
 	if err != nil {
+		// Even if backup fails, still try to remove the conf — user asked.
+		_ = os.Remove(conf)
+		if _, e2 := os.Stat(conf); e2 == nil {
+			return "", fmt.Errorf("backup failed: %v (conf still present)", err)
+		}
 		return "", err
 	}
-	_ = os.Remove(filepath.Join(ServerDir, name+".conf"))
+	if err := os.Remove(conf); err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("remove %s: %w (backup at %s)", conf, err, bak)
+	}
+	if _, err := os.Stat(conf); err == nil {
+		return "", fmt.Errorf("delete failed: %s still exists after remove (backup at %s)", conf, bak)
+	}
+	_ = exec.Command("systemctl", "daemon-reload").Run()
 	return bak, nil
 }
 
