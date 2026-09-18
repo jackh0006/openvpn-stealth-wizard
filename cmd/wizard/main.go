@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/tui"
 )
 
-const version = "0.2.1"
+const version = "0.3.0"
 
 func main() {
 	checkOnly := flag.Bool("check", false, "read-only health check, changes nothing")
@@ -29,7 +30,9 @@ func main() {
 	fallback := flag.String("fallback", "", "fallback IP (DNS bypass)")
 	port := flag.Int("port", 443, "vpn port")
 	user := flag.String("user", "", "vpn username")
-	pass := flag.String("pass", "", "vpn password")
+	pass := flag.String("pass", "", "vpn password (empty + --gen-pass = suggest one; --no-password = cert-only)")
+	noPass := flag.Bool("no-password", false, "cert-only mode: no password, cert alone is enough")
+	genPass := flag.Bool("gen-pass", false, "generate a strong password when --pass is empty")
 	email := flag.String("email", "", "letsencrypt contact (domain mode)")
 	freePort := flag.Bool("free-port", false, "stop the service owning --port (never SSH), then continue")
 	mgAction := flag.String("manage", "", "manage action: list|restart|delete|user-list|user-add|user-pass|user-del|revoke|clients|logs|backup")
@@ -60,6 +63,14 @@ EXAMPLES:
     --mode domain --host vpn.example.com --fallback 203.0.113.10 \
     --port 443 --user alice --pass 'S3cure!!' --email admin@example.com
 
+  # cert-only (no password, generate or skip --pass)
+  sudo wizard --non-interactive --yes --no-password \
+    --mode domain --host vpn.example.com --user alice --email admin@example.com
+
+  # auto-generate password if you leave --pass empty
+  sudo wizard --non-interactive --yes --gen-pass \
+    --mode domain --host vpn.example.com --user alice --email admin@example.com
+
   # IP-only server (no domain, no email needed)
   sudo wizard --non-interactive --yes \
     --mode ip --host 203.0.113.10 --port 443 --user alice --pass 'S3cure!!'
@@ -88,7 +99,8 @@ FLAGS:
   --non-interactive  no pretty screens, use flags (needs --yes to change anything)
   --yes              I understand, change the system
   --mode ip|domain   --host NAME --fallback IP --port N (default 443)
-  --user NAME --pass SECRET --email ADDR
+  --user NAME --pass SECRET  (--gen-pass = generate when empty, --no-password = cert-only)
+  --email ADDR       --free-port to take a busy port (never SSH)  --manage list etc.
   --version          print version and exit
 
 EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
@@ -98,12 +110,29 @@ EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
 
 	if *nonInteractive || *checkOnly || *mgAction != "" || *freePort {
 		if *mgAction != "" {
-			os.Exit(runManage(*mgAction, *mgServer, *mgUser, *mgPass))
+			follow := false
+			if *mgAction == "logs" {
+				for _, a := range os.Args {
+					if a == "--follow" || a == "-f" {
+						follow = true
+					}
+				}
+			}
+			os.Exit(runManage(*mgAction, *mgServer, *mgUser, *mgPass, follow))
 		}
 		c := cfg.Defaults()
 		c.Mode = cfg.Mode(*mode)
 		c.Host, c.Fallback, c.Port = *host, *fallback, *port
-		c.VPNUser, c.VPNPass, c.Email = *user, *pass, *email
+		c.VPNUser, c.Email = *user, *email
+		c.NoPassword = *noPass
+		if *noPass {
+			c.VPNPass = ""
+		} else if *pass == "" && *genPass {
+			c.VPNPass = genSuggestedPass()
+			fmt.Println("generated password for", *user, ":", c.VPNPass, "(save it — shown only once)")
+		} else {
+			c.VPNPass = *pass
+		}
 		if err := c.Validate(); err != nil {
 			fmt.Fprintln(os.Stderr, "bad flags: "+err.Error())
 			os.Exit(2)
@@ -134,7 +163,7 @@ EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
 }
 
 // runManage executes one management action headlessly.
-func runManage(action, server, user, pass string) int {
+func runManage(action, server, user, pass string, follow bool) int {
 	switch action {
 	case "list":
 		ss := manage.Discover()
@@ -211,6 +240,19 @@ func runManage(action, server, user, pass string) int {
 		}
 		return 0
 	case "logs":
+		if follow {
+			fmt.Println(manage.TailLog(30))
+			fmt.Println("--- following (ctrl+c to stop) ---")
+			last := ""
+			for {
+				time.Sleep(1500 * time.Millisecond)
+				cur := manage.TailLog(30)
+				if cur != last {
+					fmt.Println(cur)
+					last = cur
+				}
+			}
+		}
 		fmt.Println(manage.TailLog(30))
 		return 0
 	case "backup":
@@ -224,4 +266,14 @@ func runManage(action, server, user, pass string) int {
 	}
 	fmt.Fprintln(os.Stderr, "unknown --manage action: "+action)
 	return 2
+}
+
+func genSuggestedPass() string {
+	const letters = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+	b := make([]byte, 12)
+	for i := range b {
+		b[i] = letters[int(time.Now().UnixNano()+int64(i*7919))%len(letters)]
+		time.Sleep(time.Microsecond)
+	}
+	return string(b)
 }

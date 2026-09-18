@@ -34,6 +34,9 @@ exit 1
 `
 
 func (PasswordAuth) Check(c cfg.Config) Result {
+	if c.NoPassword {
+		return Result{true, "cert-only mode (no password)"}
+	}
 	b, err := os.ReadFile(authScript)
 	if err != nil || !strings.Contains(string(b), "via-file") {
 		return Result{false, "auth script missing"}
@@ -46,6 +49,10 @@ func (PasswordAuth) Check(c cfg.Config) Result {
 }
 
 func (PasswordAuth) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) error {
+	if c.NoPassword {
+		log.OK("cert-only mode — no password to set")
+		return nil
+	}
 	if err := os.MkdirAll(usersDir, 0o755); err != nil {
 		return err
 	}
@@ -191,6 +198,10 @@ func (ClientBundle) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) e
 	for _, r := range c.Remotes() {
 		sb.WriteString(r + "\n")
 	}
+	authLines := ""
+	if !c.NoPassword {
+		authLines = "auth-user-pass\nauth-nocache\n"
+	}
 	sb.WriteString(`resolv-retry infinite
 server-poll-timeout 10
 connect-retry 5 60
@@ -198,9 +209,7 @@ nobind
 persist-key
 persist-tun
 remote-cert-tls server
-auth-user-pass
-auth-nocache
-auth SHA256
+` + authLines + `auth SHA256
 data-ciphers AES-256-GCM:AES-128-GCM
 data-ciphers-fallback AES-256-GCM
 tls-version-min 1.2

@@ -251,7 +251,18 @@ func FreePort(ctx context.Context, port int, log *logx.Logger) error {
 			return err
 		}
 		_ = Run(ctx, log, "systemctl", "disable", unit)
-		time.Sleep(2 * time.Second)
+		// Retry-verify loop up to 10s (services can linger).
+		for i := 0; i < 5; i++ {
+			time.Sleep(2 * time.Second)
+			if still := PortOwner(port); still.Process == "" {
+				break
+			}
+			if i == 4 {
+				if still := PortOwner(port); still.Process != "" {
+					return fmt.Errorf("port %d still held by %s after stop; kill pid %s manually: kill %s", port, still.String(), still.PID, still.PID)
+				}
+			}
+		}
 		// For templated openvpn-server@*, also stop any other instances that
 		// might still hold the same port (discovered via ServerDir).
 		if strings.HasPrefix(unit, "openvpn-server@") {
@@ -268,7 +279,7 @@ func FreePort(ctx context.Context, port int, log *logx.Logger) error {
 		}
 	}
 	if still := PortOwner(port); still.Process != "" {
-		return fmt.Errorf("port %d still held by %s after stop; kill it manually", port, still.String())
+		return fmt.Errorf("port %d still held by %s; stop its service or kill pid %s manually", port, still.String(), still.PID)
 	}
 	log.OK(fmt.Sprintf("port %d is free now", port))
 	return nil

@@ -22,15 +22,16 @@ const (
 // Config holds every wizard input. It mirrors the runbook we validated
 // on a live Ubuntu 22.04 VPS.
 type Config struct {
-	Mode     Mode
-	Host     string // IP or domain, used in `remote` lines
-	Fallback string // raw IP fallback appended as second remote (DNS-bypass)
-	Port     int
-	VPNUser  string
-	VPNPass  string
-	Email    string // Let's Encrypt contact (domain mode)
-	Subnet   string // e.g. 10.8.0.0/24
-	OutDir   string // client bundle dir, e.g. /root/Open Code/OpenVPN
+	Mode       Mode
+	Host       string // IP or domain, used in `remote` lines
+	Fallback   string // raw IP fallback appended as second remote (DNS-bypass)
+	Port       int
+	VPNUser    string
+	VPNPass    string
+	NoPassword bool   // when true: cert-only, no password required
+	Email      string // Let's Encrypt contact (domain mode)
+	Subnet     string // e.g. 10.8.0.0/24
+	OutDir     string // client bundle dir, e.g. /root/Open Code/OpenVPN
 }
 
 func Defaults() Config {
@@ -50,8 +51,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.VPNUser) == "" {
 		return errors.New("vpn username is empty")
 	}
-	if len(c.VPNPass) < 8 {
-		return errors.New("vpn password must be at least 8 characters")
+	if !c.NoPassword && len(c.VPNPass) < 8 {
+		return errors.New("vpn password must be at least 8 characters (or choose cert-only)")
 	}
 	if _, _, err := net.ParseCIDR(c.Subnet); err != nil {
 		return fmt.Errorf("bad subnet %q: %w", c.Subnet, err)

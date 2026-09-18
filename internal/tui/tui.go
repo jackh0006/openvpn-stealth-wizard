@@ -90,8 +90,18 @@ type Model struct {
 	mgServers  []manage.Server
 	mgIdx      int
 	mgMsg      string
+	mgView     mgView
 	prompt     promptState
 }
+
+type mgView int
+
+const (
+	mgMenu mgView = iota
+	mgLogs
+)
+
+type logFollowTickMsg struct{}
 
 // promptState is a reusable single-line question (username, password,
 // delete confirmation) used by manage mode.
@@ -185,6 +195,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitLog(m.log)
 		}
 		return m, nil
+	case logFollowTickMsg:
+		m.viewport.SetContent(manage.TailLog(200))
+		m.viewport.GotoBottom()
+		if m.stage == stageManage && m.mgView == mgLogs {
+			return m, logFollowTick()
+		}
+		return m, nil
 	case stepDoneMsg:
 		if m.cancelled {
 			m.stage = stageDone
@@ -230,6 +247,13 @@ func waitLog(l *logx.Logger) tea.Cmd {
 	return func() tea.Msg {
 		<-l.Changed()
 		return logTickMsg{}
+	}
+}
+
+func logFollowTick() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(1500 * time.Millisecond)
+		return logFollowTickMsg{}
 	}
 }
 
@@ -295,8 +319,8 @@ func (m *Model) validateForm() bool {
 	if strings.TrimSpace(c.VPNUser) == "" {
 		bad(3, "username is empty")
 	}
-	if len(c.VPNPass) < 8 {
-		bad(4, "at least 8 characters")
+	if !c.NoPassword && len(c.VPNPass) < 8 {
+		bad(4, "at least 8 characters (or ctrl+n for cert-only)")
 	}
 	for _, e := range m.fieldErrs {
 		if e != "" {
@@ -379,7 +403,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.focus == 4 {
 				p := suggestPassword()
 				m.inputs[4].SetValue(p)
+				m.cfg.NoPassword = false
 				m.detectNote = "suggested password filled — you can keep it or type your own"
+			}
+			return m, nil
+		case "ctrl+n":
+			m.cfg.NoPassword = !m.cfg.NoPassword
+			if m.cfg.NoPassword {
+				m.inputs[4].SetValue("")
+				m.detectNote = "cert-only mode: no password will be required"
+			} else {
+				m.detectNote = "password mode: set a password (ctrl+g to suggest one)"
 			}
 			return m, nil
 		case "ctrl+d":
@@ -557,6 +591,11 @@ func (m Model) askPrompt(title, action, arg string, hide bool) Model {
 }
 
 func (m Model) handleManageKey(k string) (tea.Model, tea.Cmd) {
+	if m.mgView == mgLogs {
+		m.mgView = mgMenu
+		m.mgMsg = ""
+		return m, nil
+	}
 	switch k {
 	case "up", "k":
 		if m.mgIdx > 0 {
@@ -587,7 +626,10 @@ func (m Model) handleManageKey(k string) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "3", "l":
-		m.mgMsg = manage.TailLog(12)
+		m.mgView = mgLogs
+		m.viewport = viewport.New(100, 20)
+		m.viewport.SetContent(manage.TailLog(200))
+		return m, logFollowTick()
 	case "4", "u":
 		users := manage.ListUsers()
 		if len(users) == 0 {
@@ -720,7 +762,11 @@ func (m Model) View() string {
 		}
 		sb.WriteString(helpStyle.Render("\n↑/↓ choose • enter confirm • ") + back)
 	case stageForm:
-		sb.WriteString(fmt.Sprintf("Setup inputs  (mode: %s, ctrl+d switches ip/domain)\n", m.cfg.Mode))
+		pwLabel := "VPN password"
+		if m.cfg.NoPassword {
+			pwLabel = "VPN password (cert-only, disabled)"
+		}
+		sb.WriteString(fmt.Sprintf("Setup inputs  (mode: %s, ctrl+d switches ip/domain, ctrl+n toggles cert-only)\n", m.cfg.Mode))
 		if m.detectNote != "" {
 			sb.WriteString(warnStyle.Render("★ "+m.detectNote) + "\n")
 		}
@@ -729,9 +775,17 @@ func (m Model) View() string {
 		for i := range m.inputs {
 			hint := ""
 			if i == 4 {
-				hint = "  (ctrl+g suggests a strong password)"
+				if m.cfg.NoPassword {
+					hint = "  (cert-only — press ctrl+n to enable password)"
+				} else {
+					hint = "  (ctrl+g suggests a strong password, ctrl+n for cert-only)"
+				}
 			}
-			sb.WriteString(labels[i] + hint + "\n" + m.inputs[i].View() + "\n")
+			lbl := labels[i]
+			if i == 4 {
+				lbl = pwLabel
+			}
+			sb.WriteString(lbl + hint + "\n" + m.inputs[i].View() + "\n")
 			if m.fieldErrs[i] != "" {
 				sb.WriteString(errStyle.Render("  ⚠ "+m.fieldErrs[i]) + "\n")
 			}
@@ -740,7 +794,7 @@ func (m Model) View() string {
 		if m.errMsg != "" {
 			sb.WriteString(errStyle.Render("⚠ "+m.errMsg) + "\n\n")
 		}
-		sb.WriteString(helpStyle.Render("type to edit • tab next field • ctrl+g suggest password • enter continue • ") + back)
+		sb.WriteString(helpStyle.Render("type to edit • tab next field • ctrl+g suggest password • ctrl+n cert-only • enter continue • ") + back)
 	case stageReview:
 		sb.WriteString("Plan preview — I will do exactly this:\n\n")
 		for i, s := range steps.All() {
@@ -752,6 +806,11 @@ func (m Model) View() string {
 		}
 		sb.WriteString(helpStyle.Render("\nenter/y start • f free the port • ") + back)
 	case stageManage:
+		if m.mgView == mgLogs {
+			sb.WriteString("Live logs — streaming (any key to go back)\n\n")
+			sb.WriteString(m.viewport.View())
+			break
+		}
 		sb.WriteString("Servers on this machine:\n\n")
 		if len(m.mgServers) == 0 {
 			sb.WriteString(whyStyle.Render("  none found under /etc/openvpn/server — install one first\n"))
@@ -792,12 +851,34 @@ func (m Model) View() string {
 			}
 			sb.WriteString(fmt.Sprintf("  %s %-28s %s\n", mark, r.Name, whyStyle.Render(r.Detail)))
 		}
-		sb.WriteString("\n" + selStyle.Render("Done. Server "+m.cfg.Host+":"+strconv.Itoa(m.cfg.Port)+" — user "+m.cfg.VPNUser+" ready."))
+		if len(m.results) > 0 {
+			allOK := true
+			for _, r := range m.results {
+				if !r.OK {
+					allOK = false
+				}
+			}
+			if allOK {
+				sb.WriteString("\n" + selStyle.Render("All checks passed — server "+m.cfg.Host+":"+strconv.Itoa(m.cfg.Port)+" is ready."))
+			} else {
+				sb.WriteString("\n" + warnStyle.Render("Some checks failed — see ✘ above, or run wizard --check again."))
+			}
+		}
+		dlHost := m.cfg.Fallback
+		if dlHost == "" {
+			dlHost = m.cfg.Host
+		}
 		ovpn := manage.BundleRoot + "/" + m.cfg.VPNUser + ".ovpn"
-		sb.WriteString("\n\n" + warnStyle.Render("Download the phone/laptop file:") + "\n")
-		sb.WriteString(fmt.Sprintf("  scp root@%s:\"%s\" ./%s.ovpn\n", m.cfg.Host, ovpn, m.cfg.VPNUser))
-		sb.WriteString(fmt.Sprintf("  Then on the phone: OpenVPN app → Import %s.ovpn → user %s → password you set.\n", m.cfg.VPNUser, m.cfg.VPNUser))
-		sb.WriteString(warnStyle.Render("  Need help?  ") + "wizard --help  •  wizard --manage list\n")
+		sb.WriteString("\n\n" + warnStyle.Render("Get the file on your device:") + "\n")
+		sb.WriteString(fmt.Sprintf("  scp root@%s:\"%s\" ./%s.ovpn\n", dlHost, ovpn, m.cfg.VPNUser))
+		sb.WriteString(fmt.Sprintf("  If scp asks for a password: your VPS root password. With a key: scp -i ~/.ssh/id_rsa root@%s:\"%s\" ./%s.ovpn\n", dlHost, ovpn, m.cfg.VPNUser))
+		sb.WriteString(fmt.Sprintf("  Then on the phone: OpenVPN app → Import %s.ovpn → ", m.cfg.VPNUser))
+		if m.cfg.NoPassword {
+			sb.WriteString("connect (cert-only, no password).\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("user %s → password you set.\n", m.cfg.VPNUser))
+		}
+		sb.WriteString(warnStyle.Render("  Need help?  ") + "wizard --help  •  wizard --manage list  •  wizard --check\n")
 		sb.WriteString(helpStyle.Render("\nenter quit • ") + back)
 	}
 	return sb.String()

@@ -1,5 +1,12 @@
 # Changelog — newest on top, plain words.
 
+## v0.3.0 (2026-09-18)
+- VPS: restored 01-JH + built missing 02-JH (IP-fallback scp now works)
+- Fixed: port 443 freeing with retry loop + real unit detection, always asks first
+- New: install asks password type — type it / suggest strong / cert-only (--no-password)
+- Fixed: manage delete is now 9 in a clear numbered menu (was hidden x)
+- Fixed: bundle detection + download shows IP-based scp with password/key help + live logs streaming (3)
+
 ## v0.2.1 (2026-09-18)
 - Fixed: port freeing now finds the real systemd unit (even for openvpn),
   always asks before touching a self-owned port, one-press free + continue
