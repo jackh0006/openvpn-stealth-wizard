@@ -1,5 +1,8 @@
 # Changelog — newest on top, plain words.
 
+## v0.3.1 (2026-09-18)
+- Fixed: installing over your own VPN on 443 no longer blocks — review says “will restart in place”, enter proceeds (port is freed by restart)
+
 ## v0.3.0 (2026-09-18)
 - VPS: restored 01-JH + built missing 02-JH (IP-fallback scp now works)
 - Fixed: port 443 freeing with retry loop + real unit detection, always asks first

@@ -287,9 +287,25 @@ func FreePort(ctx context.Context, port int, log *logx.Logger) error {
 
 func (Conflicts) Check(c cfg.Config) Result {
 	if o := PortOwner(c.Port); o.Process != "" {
+		// Self-owned port: this wizard's own OpenVPN already on the target port.
+		// That's not a conflict — we will restart it in place.
+		if isSelfOpenVPN(o) {
+			return Result{true, fmt.Sprintf("port %d held by your own VPN (%s) — will restart in place", c.Port, o.String())}
+		}
 		return Result{false, fmt.Sprintf("port %d held by %s", c.Port, o.String())}
 	}
 	return Result{true, fmt.Sprintf("port %d is free", c.Port)}
+}
+
+func isSelfOpenVPN(o Owner) bool {
+	if o.Process != "openvpn" {
+		return false
+	}
+	if strings.HasPrefix(o.Unit, "openvpn-server@") {
+		return true
+	}
+	// No unit but process is openvpn — still our stack (fallback case)
+	return o.Unit == "openvpn-server@server.service"
 }
 
 func (Conflicts) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) error {
