@@ -10,7 +10,7 @@ login, Cloudflare DNS, and an import-ready `.ovpn` with DNS-bypass fallback.
 
 Born from a real deployment runbook. Every lesson is now code.
 
-## Installation (one line, like a 5-year-old does it)
+## Installation (one command)
 
 On your Ubuntu server, as root, paste this **one line** and press Enter:
 

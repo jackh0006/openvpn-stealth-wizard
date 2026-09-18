@@ -1,7 +1,7 @@
 #!/bin/bash
 # openvpn-stealth-wizard one-line installer.
 # Usage: curl -sSL https://raw.githubusercontent.com/jackh0006/openvpn-stealth-wizard/main/install.sh | sudo bash
-# A 5-year-old could run it: it explains every step, then proves it worked.
+# One command: it explains every step, then proves it worked.
 set -u
 REPO="jackh0006/openvpn-stealth-wizard"
 DEST="/usr/local/bin/wizard"
@@ -39,6 +39,6 @@ good "installed $DEST"
 
 say "Step 4/4: proving it works..."
 "$DEST" --version || die "installed but will not start"
-good "all done! Next step for you, champ:"
-echo "    sudo wizard          (pretty guided setup)"
+good "all done! Next step:"
+echo "    sudo wizard          (guided setup with explanations)"
 echo "    wizard --help        (all commands with examples)"

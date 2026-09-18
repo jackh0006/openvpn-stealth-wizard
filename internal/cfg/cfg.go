@@ -1,9 +1,12 @@
 package cfg
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -74,7 +77,45 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Remotes renders primary + fallback remote lines.
+// lastRunPath is where the wizard remembers accepted inputs.
+func lastRunPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "openvpn-stealth-wizard", "last.json")
+}
+
+// SaveLast remembers this config for next time.
+func (c Config) SaveLast() {
+	p := lastRunPath()
+	if p == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(p, b, 0o600)
+}
+
+// LoadLast returns the previous run's config, if any.
+func LoadLast() (Config, bool) {
+	p := lastRunPath()
+	if p == "" {
+		return Config{}, false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return Config{}, false
+	}
+	var c Config
+	if err := json.Unmarshal(b, &c); err != nil {
+		return Config{}, false
+	}
+	return c, true
+}
 func (c Config) Remotes() []string {
 	out := []string{fmt.Sprintf("remote %s %s", c.Host, strconv.Itoa(c.Port))}
 	fb := c.Fallback

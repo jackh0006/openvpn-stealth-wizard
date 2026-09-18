@@ -11,7 +11,7 @@ import (
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/tui"
 )
 
-const version = "0.1.1"
+const version = "0.1.2"
 
 func main() {
 	checkOnly := flag.Bool("check", false, "read-only health check, changes nothing")
@@ -19,7 +19,7 @@ func main() {
 	nonInteractive := flag.Bool("non-interactive", false, "no TUI; use flags")
 	yes := flag.Bool("yes", false, "apply without asking (with --non-interactive)")
 	ver := flag.Bool("version", false, "print version")
-	help := flag.Bool("help", false, "print kid-simple usage and exit")
+	help := flag.Bool("help", false, "print usage with examples and exit")
 	mode := flag.String("mode", "domain", "ip or domain")
 	host := flag.String("host", "", "server IP or domain")
 	fallback := flag.String("fallback", "", "fallback IP (DNS bypass)")
@@ -35,7 +35,7 @@ func main() {
 	}
 
 	if *help {
-		fmt.Print(`openvpn-stealth-wizard: stealth VPN on port 443, guided like a friend.
+		fmt.Print(`openvpn-stealth-wizard: stealth VPN on port 443, guided setup.
 
 START HERE (pick one):
   sudo wizard                  pretty step-by-step mode (recommended)
