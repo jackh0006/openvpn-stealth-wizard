@@ -67,6 +67,7 @@ var modes = []modeItem{
 	{"check", "Health check only: read-only, changes nothing"},
 	{"fix", "Repair mode: re-applies missing pieces only"},
 	{"manage", "Manage servers: users, restart, delete, logs"},
+	{"uninstall", "Uninstall: remove everything this wizard created (backup kept)"},
 }
 
 // Model is the wizard state machine.
@@ -437,6 +438,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.mgMsg = ""
 				m.stage = stageManage
 				return m, nil
+			case "uninstall":
+				m.prompt = promptState{active: true, title: "Type UNINSTALL to remove everything (backup kept, SSH untouched)", action: "uninstall-all", arg: ""}
+				ti := textinput.New()
+				ti.Placeholder = "UNINSTALL"
+				ti.CharLimit = 20
+				ti.Focus()
+				m.prompt.input = ti
+				m.stage = stagePrompt
+				return m, nil
 			}
 			m.stage = stageForm
 		case "esc", "q":
@@ -714,6 +724,29 @@ func (m Model) handleManageKey(k string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handlePromptKey(k string, msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.prompt.action == "uninstall-all" {
+		switch k {
+		case "esc":
+			m.prompt = promptState{}
+			m.stage = stageMode
+			return m, nil
+		case "enter":
+			val := strings.TrimSpace(m.prompt.input.Value())
+			m.prompt = promptState{}
+			if val != "UNINSTALL" {
+				m.stage = stageMode
+				return m, nil
+			}
+			m.stage = stageRun
+			m.steps = []steps.Step{steps.Uninstall{}}
+			m.cur = 0
+			m.viewport = viewport.New(100, 20)
+			return m, tea.Batch(waitLog(m.log), m.execStep(0))
+		}
+		var cmd tea.Cmd
+		m.prompt.input, cmd = m.prompt.input.Update(msg)
+		return m, cmd
+	}
 	// Special handling for port-free confirmation prompt (used from review).
 	if m.prompt.action == "confirm-free-port" || m.prompt.action == "confirm-free-port-then-run" {
 		switch k {
@@ -891,6 +924,7 @@ func (m Model) View() string {
 		sb.WriteString(helpStyle.Render("\nPick a server with ↑/↓, then choose:\n"))
 		sb.WriteString(helpStyle.Render("  1 restart  2 clients  3 logs  4 list-users  5 add-user  6 change-password  7 delete-user  8 revoke-cert  9 delete SERVER (asks name, backup kept)  • 0/esc back\n"))
 		sb.WriteString(helpStyle.Render("  Single-key shortcuts still work: r c l u a p d v x — but numbers are easier to read\n"))
+		sb.WriteString(helpStyle.Render("  Also: uninstall (type UNINSTALL) removes everything — use the uninstall menu or  wizard --uninstall\n"))
 	case stagePrompt:
 		sb.WriteString(m.prompt.title + "\n\n" + m.prompt.input.View() + "\n\n")
 		sb.WriteString(helpStyle.Render("enter confirm • ") + back)

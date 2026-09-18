@@ -1,5 +1,9 @@
 # Changelog — newest on top, plain words.
 
+## v0.4.1 (2026-09-18)
+- New: dependencies auto-install (openvpn, nginx, iptables, ufw, curl …) — no manual apt needed
+- New: full uninstall (TUI uninstall mode, --uninstall / --manage uninstall, backup kept, SSH never touched)
+
 ## v0.4.0 (2026-09-18)
 - Synced to VPS-tasted working state: tun-mtu 1400 / mssfix 1200 on server + bundles
 - New: DNS choice (cloudflare/google/quad9/adguard/custom) with TUI field + headless --dns

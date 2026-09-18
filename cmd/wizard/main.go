@@ -16,7 +16,7 @@ import (
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/tui"
 )
 
-const version = "0.4.0"
+const version = "0.4.1"
 
 func main() {
 	checkOnly := flag.Bool("check", false, "read-only health check, changes nothing")
@@ -35,10 +35,11 @@ func main() {
 	genPass := flag.Bool("gen-pass", false, "generate a strong password when --pass is empty")
 	email := flag.String("email", "", "letsencrypt contact (domain mode)")
 	freePort := flag.Bool("free-port", false, "stop the service owning --port (never SSH), then continue")
-	mgAction := flag.String("manage", "", "manage action: list|restart|delete|user-list|user-add|user-pass|user-del|revoke|clients|logs|backup")
+	mgAction := flag.String("manage", "", "manage action: list|restart|delete|user-list|user-add|user-pass|user-del|revoke|clients|logs|backup|uninstall")
 	mgServer := flag.String("server", "server", "server name for --manage")
 	mgUser := flag.String("muser", "", "username for user actions")
 	mgPass := flag.String("mpass", "", "password for user-add/user-pass")
+	uninstall := flag.Bool("uninstall", false, "uninstall everything this wizard created (backup kept, never touches SSH)")
 	flag.Parse()
 
 	if *ver {
@@ -90,8 +91,9 @@ EXAMPLES:
   sudo wizard --manage delete --server server   (asks for the name to confirm)
   sudo wizard --manage revoke --muser oldphone
   sudo wizard --manage clients --server server
-  sudo wizard --manage logs
+  sudo wizard --manage logs --follow
   sudo wizard --manage backup
+  sudo wizard --uninstall   (or --manage uninstall -- removes everything, backup kept)
 
 FLAGS:
   --check            health check only, exit 0 = healthy, 1 = sick
@@ -106,6 +108,22 @@ FLAGS:
 EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
 `)
 		return
+	}
+
+	if *uninstall || *mgAction == "uninstall" {
+		fmt.Print("Type UNINSTALL to confirm removing everything (backup kept, SSH untouched): ")
+		var c string
+		fmt.Scanln(&c)
+		if c != "UNINSTALL" {
+			fmt.Fprintln(os.Stderr, "kept -- type UNINSTALL exactly to confirm")
+			os.Exit(2)
+		}
+		if err := (steps.Uninstall{}).Apply(context.Background(), cfg.Defaults(), logx.New()); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		fmt.Println("uninstall done -- backup in /root/openvpn-*.tar.gz")
+		os.Exit(0)
 	}
 
 	if *nonInteractive || *checkOnly || *mgAction != "" || *freePort {
@@ -129,7 +147,7 @@ EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
 			c.VPNPass = ""
 		} else if *pass == "" && *genPass {
 			c.VPNPass = genSuggestedPass()
-			fmt.Println("generated password for", *user, ":", c.VPNPass, "(save it — shown only once)")
+			fmt.Println("generated password for", *user, ":", c.VPNPass, "(save it -- shown only once)")
 		} else {
 			c.VPNPass = *pass
 		}

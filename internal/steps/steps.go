@@ -32,6 +32,7 @@ type Step interface {
 // All returns install steps in runbook order.
 func All() []Step {
 	return []Step{
+		Dependencies{},
 		Preflight{},
 		Conflicts{},
 		PKI{},
