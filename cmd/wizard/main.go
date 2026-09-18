@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -8,10 +9,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/cfg"
+	"github.com/jackh0006/openvpn-stealth-wizard/internal/logx"
+	"github.com/jackh0006/openvpn-stealth-wizard/internal/manage"
+	"github.com/jackh0006/openvpn-stealth-wizard/internal/steps"
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/tui"
 )
 
-const version = "0.1.2"
+const version = "0.2.0"
 
 func main() {
 	checkOnly := flag.Bool("check", false, "read-only health check, changes nothing")
@@ -27,6 +31,11 @@ func main() {
 	user := flag.String("user", "", "vpn username")
 	pass := flag.String("pass", "", "vpn password")
 	email := flag.String("email", "", "letsencrypt contact (domain mode)")
+	freePort := flag.Bool("free-port", false, "stop the service owning --port (never SSH), then continue")
+	mgAction := flag.String("manage", "", "manage action: list|restart|delete|user-list|user-add|user-pass|user-del|revoke|clients|logs|backup")
+	mgServer := flag.String("server", "server", "server name for --manage")
+	mgUser := flag.String("muser", "", "username for user actions")
+	mgPass := flag.String("mpass", "", "password for user-add/user-pass")
 	flag.Parse()
 
 	if *ver {
@@ -58,6 +67,21 @@ EXAMPLES:
   # fix what's missing, keep what's fine
   sudo wizard --non-interactive --yes --fix ... (same flags as install)
 
+  # free a taken port first (never touches SSH)
+  sudo wizard --non-interactive --yes --free-port --port 443 ... (install flags)
+
+  # manage existing servers (no install flags needed)
+  sudo wizard --manage list
+  sudo wizard --manage user-add --muser alice --mpass 'S3cure!!'
+  sudo wizard --manage user-pass --muser alice --mpass 'N3w-pass!!'
+  sudo wizard --manage user-del --muser alice
+  sudo wizard --manage restart --server server
+  sudo wizard --manage delete --server server   (asks for the name to confirm)
+  sudo wizard --manage revoke --muser oldphone
+  sudo wizard --manage clients --server server
+  sudo wizard --manage logs
+  sudo wizard --manage backup
+
 FLAGS:
   --check            health check only, exit 0 = healthy, 1 = sick
   --fix              re-apply missing pieces only
@@ -72,7 +96,10 @@ EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
 		return
 	}
 
-	if *nonInteractive || *checkOnly {
+	if *nonInteractive || *checkOnly || *mgAction != "" || *freePort {
+		if *mgAction != "" {
+			os.Exit(runManage(*mgAction, *mgServer, *mgUser, *mgPass))
+		}
 		c := cfg.Defaults()
 		c.Mode = cfg.Mode(*mode)
 		c.Host, c.Fallback, c.Port = *host, *fallback, *port
@@ -88,6 +115,14 @@ EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
 			fmt.Fprintln(os.Stderr, "refusing to change the system without --yes")
 			os.Exit(2)
 		}
+		if *freePort {
+			log := logx.New()
+			fmt.Fprintf(os.Stdout, "freeing port %d if taken (never SSH)…\n", c.Port)
+			if err := steps.FreePort(context.Background(), c.Port, log); err != nil {
+				fmt.Fprintln(os.Stderr, "cannot free port: "+err.Error())
+				os.Exit(1)
+			}
+		}
 		os.Exit(tui.RunHeadless(os.Stdout, c, *fix))
 	}
 
@@ -96,4 +131,97 @@ EXIT CODES: 0 ok, 1 something failed, 2 bad flags (nothing was touched).
 		fmt.Fprintln(os.Stderr, "tui error: "+err.Error())
 		os.Exit(1)
 	}
+}
+
+// runManage executes one management action headlessly.
+func runManage(action, server, user, pass string) int {
+	switch action {
+	case "list":
+		ss := manage.Discover()
+		if len(ss) == 0 {
+			fmt.Println("no servers under /etc/openvpn/server")
+			return 1
+		}
+		for _, s := range ss {
+			state := "stopped"
+			if s.Active {
+				state = "running"
+			}
+			fmt.Printf("%-12s port %-5d %-22s %-8s clients:%d bundle:%v\n",
+				s.Name, s.Port, s.Subnet, state, len(s.Clients), s.Bundle)
+		}
+		return 0
+	case "restart":
+		if err := manage.Restart(server); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		fmt.Println(server + " restarted")
+		return 0
+	case "delete":
+		fmt.Printf("type the server name (%s) to confirm deletion: ", server)
+		var confirm string
+		fmt.Scanln(&confirm)
+		if confirm != server {
+			fmt.Fprintln(os.Stderr, "name did not match, server kept")
+			return 2
+		}
+		bak, err := manage.Delete(server)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		fmt.Println(server + " purged. Backup: " + bak)
+		return 0
+	case "user-list":
+		for _, u := range manage.ListUsers() {
+			fmt.Println(u)
+		}
+		return 0
+	case "user-add", "user-pass":
+		if err := manage.SetUser(user, pass); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		fmt.Println("user " + user + " ready")
+		return 0
+	case "user-del":
+		if err := manage.DelUser(user); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		fmt.Println("user " + user + " deleted")
+		return 0
+	case "revoke":
+		out, err := manage.RevokeClient(user)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		fmt.Println(user + ": " + out)
+		return 0
+	case "clients":
+		cls := manage.ConnectedClients(server)
+		if len(cls) == 0 {
+			fmt.Println(server + ": no clients connected")
+			return 1
+		}
+		for _, c := range cls {
+			fmt.Println(c)
+		}
+		return 0
+	case "logs":
+		fmt.Println(manage.TailLog(30))
+		return 0
+	case "backup":
+		bak, err := manage.BackupAll()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		fmt.Println("backup: " + bak)
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "unknown --manage action: "+action)
+	return 2
 }

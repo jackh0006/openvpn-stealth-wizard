@@ -68,6 +68,22 @@ IP-only? Swap `--mode domain --host vpn.example.com` for
 `--mode ip --host 203.0.113.10` (no email needed). Custom port? Change
 `--port` (443 recommended: looks like a normal website).
 
+## Manage existing servers (TUI `manage` mode or flags)
+
+```sh
+sudo wizard --manage list                                   # all servers + live clients
+sudo wizard --manage user-add --muser bob --mpass 'S3cure!!'
+sudo wizard --manage user-pass --muser bob --mpass 'N3w-pass!!'
+sudo wizard --manage user-del --muser bob
+sudo wizard --manage revoke --muser oldphone                # kill a lost cert
+sudo wizard --manage restart --server server
+sudo wizard --manage delete --server server                 # full purge, backup first
+sudo wizard --manage backup                                 # one tarball of everything
+```
+
+Port taken? The wizard names the owner and offers to free it (`f` in the
+TUI, `--free-port` headless). SSH (port 22) is never touched.
+
 ## Guided TUI tour
 
 No flags at all → gorgeous step-by-step TUI: mode → inputs → plan preview →

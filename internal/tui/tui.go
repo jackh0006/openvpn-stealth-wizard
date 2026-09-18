@@ -18,6 +18,7 @@ import (
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/cfg"
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/check"
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/logx"
+	"github.com/jackh0006/openvpn-stealth-wizard/internal/manage"
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/steps"
 )
 
@@ -51,6 +52,8 @@ const (
 	stageRun
 	stageVerify
 	stageDone
+	stageManage
+	stagePrompt
 )
 
 type modeItem struct {
@@ -62,6 +65,7 @@ var modes = []modeItem{
 	{"install", "Fresh setup: builds everything step by step"},
 	{"check", "Health check only: read-only, changes nothing"},
 	{"fix", "Repair mode: re-applies missing pieces only"},
+	{"manage", "Manage servers: users, restart, delete, logs"},
 }
 
 // Model is the wizard state machine.
@@ -83,6 +87,21 @@ type Model struct {
 	cancelAsk  bool
 	cancelled  bool
 	results    []check.Item
+	mgServers  []manage.Server
+	mgIdx      int
+	mgMsg      string
+	prompt     promptState
+}
+
+// promptState is a reusable single-line question (username, password,
+// delete confirmation) used by manage mode.
+type promptState struct {
+	active bool
+	title  string
+	hide   bool
+	input  textinput.Model
+	action string // add-user, set-pass, del-user, del-server, revoke
+	arg    string // extra context (e.g. username for set-pass)
 }
 
 type logTickMsg struct{}
@@ -180,6 +199,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runDoneMsg:
 		m.results = check.All(m.cfg)
 		m.stage = stageDone
+		return m, nil
+	case freePortMsg:
+		if msg.err != nil {
+			m.portWarn = "could not free port: " + msg.err.Error()
+		} else {
+			m.portWarn = ""
+			m.mgMsg = ""
+		}
 		return m, nil
 	}
 	if m.stage == stageRun {
@@ -308,9 +335,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			m.modeIdx = (m.modeIdx + 1) % len(modes)
 		case "enter":
-			if modes[m.modeIdx].name == "check" {
+			switch modes[m.modeIdx].name {
+			case "check":
 				m.results = check.All(m.cfg)
 				m.stage = stageDone
+				return m, nil
+			case "manage":
+				m.mgServers = manage.Discover()
+				m.mgIdx = 0
+				m.mgMsg = ""
+				m.stage = stageManage
 				return m, nil
 			}
 			m.stage = stageForm
@@ -372,6 +406,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.viewport = viewport.New(100, 20)
 			m.stage = stageRun
 			return m, tea.Batch(waitLog(m.log), m.execStep(0))
+		case "f":
+			if m.portWarn != "" {
+				return m, m.freePortCmd()
+			}
+			return m, nil
 		case "esc", "n":
 			m.stage = stageForm
 		}
@@ -397,8 +436,181 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancelAsk = false
 			m.stage = stageMode
 		}
+	case stageManage:
+		return m.handleManageKey(k)
+	case stagePrompt:
+		return m.handlePromptKey(k, msg)
 	}
 	return m, nil
+}
+
+type freePortMsg struct{ err error }
+
+func (m Model) freePortCmd() tea.Cmd {
+	return func() tea.Msg {
+		log := logx.New()
+		err := steps.FreePort(context.Background(), m.cfg.Port, log)
+		for _, ln := range log.Lines() {
+			_ = ln
+		}
+		return freePortMsg{err: err}
+	}
+}
+
+// mgCurrent returns the selected server, if any.
+func (m Model) mgCurrent() (manage.Server, bool) {
+	if len(m.mgServers) == 0 || m.mgIdx < 0 || m.mgIdx >= len(m.mgServers) {
+		return manage.Server{}, false
+	}
+	return m.mgServers[m.mgIdx], true
+}
+
+func (m Model) refreshManage(msg string) Model {
+	m.mgServers = manage.Discover()
+	if m.mgIdx >= len(m.mgServers) {
+		m.mgIdx = len(m.mgServers) - 1
+	}
+	if m.mgIdx < 0 {
+		m.mgIdx = 0
+	}
+	m.mgMsg = msg
+	return m
+}
+
+func (m Model) askPrompt(title, action, arg string, hide bool) Model {
+	ti := textinput.New()
+	ti.Placeholder = title
+	ti.CharLimit = 128
+	if hide {
+		ti.EchoMode = textinput.EchoPassword
+	}
+	ti.Focus()
+	m.prompt = promptState{active: true, title: title, hide: hide, input: ti, action: action, arg: arg}
+	m.stage = stagePrompt
+	return m
+}
+
+func (m Model) handleManageKey(k string) (tea.Model, tea.Cmd) {
+	switch k {
+	case "up", "k":
+		if m.mgIdx > 0 {
+			m.mgIdx--
+		}
+		m.mgMsg = ""
+	case "down", "j":
+		if m.mgIdx < len(m.mgServers)-1 {
+			m.mgIdx++
+		}
+		m.mgMsg = ""
+	case "r":
+		if s, ok := m.mgCurrent(); ok {
+			if err := manage.Restart(s.Name); err != nil {
+				m.mgMsg = "restart failed: " + err.Error()
+			} else {
+				m.mgMsg = s.Name + " restarted"
+			}
+			return m.refreshManage(m.mgMsg), nil
+		}
+	case "c":
+		if s, ok := m.mgCurrent(); ok {
+			cls := manage.ConnectedClients(s.Name)
+			if len(cls) == 0 {
+				m.mgMsg = s.Name + ": no clients connected"
+			} else {
+				m.mgMsg = s.Name + " clients: " + strings.Join(cls, ", ")
+			}
+		}
+	case "l":
+		m.mgMsg = manage.TailLog(8)
+	case "u":
+		users := manage.ListUsers()
+		if len(users) == 0 {
+			m.mgMsg = "no VPN users yet — press a to add one"
+		} else {
+			m.mgMsg = "users: " + strings.Join(users, ", ")
+		}
+	case "a":
+		return m.askPrompt("new username", "add-user", "", false), nil
+	case "p":
+		return m.askPrompt("username to set password for", "set-pass-u", "", false), nil
+	case "d":
+		return m.askPrompt("username to delete", "del-user", "", false), nil
+	case "x":
+		if s, ok := m.mgCurrent(); ok {
+			return m.askPrompt("type "+s.Name+" to delete this server FOREVER (backup kept)", "del-server", s.Name, false), nil
+		}
+	case "v":
+		return m.askPrompt("client certificate name to revoke", "revoke", "", false), nil
+	case "esc", "q":
+		m.stage = stageMode
+	}
+	return m, nil
+}
+
+func (m Model) handlePromptKey(k string, msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch k {
+	case "esc":
+		m.prompt = promptState{}
+		m.stage = stageManage
+		return m, nil
+	case "enter":
+		val := strings.TrimSpace(m.prompt.input.Value())
+		action, arg := m.prompt.action, m.prompt.arg
+		m.prompt = promptState{}
+		m.stage = stageManage
+		switch action {
+		case "add-user":
+			if val == "" {
+				m.mgMsg = "username empty, nothing done"
+				return m, nil
+			}
+			return m.askPrompt("password for "+val+" (min 8 chars)", "add-pass", val, true), nil
+		case "add-pass":
+			if err := manage.SetUser(arg, val); err != nil {
+				m.mgMsg = "add user failed: " + err.Error()
+			} else {
+				m.mgMsg = "user " + arg + " ready"
+			}
+		case "set-pass-u":
+			if val == "" {
+				m.mgMsg = "username empty, nothing done"
+				return m, nil
+			}
+			return m.askPrompt("new password for "+val, "set-pass", val, true), nil
+		case "set-pass":
+			if err := manage.SetUser(arg, val); err != nil {
+				m.mgMsg = "password change failed: " + err.Error()
+			} else {
+				m.mgMsg = "password changed for " + arg
+			}
+		case "del-user":
+			if err := manage.DelUser(val); err != nil {
+				m.mgMsg = "delete failed: " + err.Error()
+			} else {
+				m.mgMsg = "user " + val + " deleted"
+			}
+		case "del-server":
+			if val != arg {
+				m.mgMsg = "name did not match, server kept"
+				return m.refreshManage(m.mgMsg), nil
+			}
+			if bak, err := manage.Delete(arg); err != nil {
+				m.mgMsg = "delete failed: " + err.Error()
+			} else {
+				m.mgMsg = arg + " purged. Backup: " + bak
+			}
+		case "revoke":
+			if out, err := manage.RevokeClient(val); err != nil {
+				m.mgMsg = "revoke failed: " + err.Error()
+			} else {
+				m.mgMsg = val + ": " + out
+			}
+		}
+		return m.refreshManage(m.mgMsg), nil
+	}
+	var cmd tea.Cmd
+	m.prompt.input, cmd = m.prompt.input.Update(msg)
+	return m, cmd
 }
 
 func (m Model) View() string {
@@ -443,7 +655,31 @@ func (m Model) View() string {
 		if m.portWarn != "" {
 			sb.WriteString(warnStyle.Render("⚠ "+m.portWarn) + "\n")
 		}
-		sb.WriteString(helpStyle.Render("\nenter/y start • ") + back)
+		sb.WriteString(helpStyle.Render("\nenter/y start • f free the port • ") + back)
+	case stageManage:
+		sb.WriteString("Servers on this machine:\n\n")
+		if len(m.mgServers) == 0 {
+			sb.WriteString(whyStyle.Render("  none found under /etc/openvpn/server — install one first\n"))
+		}
+		for i, s := range m.mgServers {
+			marker := "  "
+			if i == m.mgIdx {
+				marker = selStyle.Render("▸ ")
+			}
+			state := "stopped"
+			if s.Active {
+				state = "running"
+			}
+			sb.WriteString(fmt.Sprintf("%s%s  port %d  %s  %s  clients:%d  bundle:%v\n",
+				marker, s.Name, s.Port, s.Subnet, state, len(s.Clients), s.Bundle))
+		}
+		if m.mgMsg != "" {
+			sb.WriteString("\n" + m.mgMsg + "\n")
+		}
+		sb.WriteString(helpStyle.Render("\n↑/↓ pick • r restart • c clients • l logs • u users • a add-user • p set-password • d del-user • v revoke-cert • x delete-server • ") + back)
+	case stagePrompt:
+		sb.WriteString(m.prompt.title + "\n\n" + m.prompt.input.View() + "\n\n")
+		sb.WriteString(helpStyle.Render("enter confirm • ") + back)
 	case stageRun:
 		if m.cancelAsk {
 			sb.WriteString(errStyle.Render("Press esc again to stop after this step. ") + "\n\n")

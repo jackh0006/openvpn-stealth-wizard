@@ -1,5 +1,13 @@
 # Changelog — newest on top, plain words.
 
+## v0.2.0 (2026-09-18)
+- Port takeover: wizard names the process holding your port and offers to
+  free it (TUI `f` key, headless `--free-port`); port 22/SSH always refused
+- Manage mode: list/restart/delete servers, users add/change/delete,
+  revoke client certificates, live clients, logs, full backup
+- Headless `--manage` actions mirror everything for scripts
+- Delete = full purge with timestamped backup tarball first
+
 ## v0.1.2 (2026-09-18)
 - Fixed: form fields are editable now (typing reaches the inputs)
 - Fixed: a second bug where the form never saved (validator tested)

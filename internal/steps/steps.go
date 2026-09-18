@@ -137,23 +137,105 @@ func (Conflicts) Why() string {
 	return "Only one program can own port 443. We find squatters first."
 }
 
-func portInUse(port int) bool {
-	out, err := Output("ss", "-tln")
+// Owner describes whatever holds a TCP port.
+type Owner struct {
+	Process string
+	PID     string
+	Unit    string
+}
+
+func (o Owner) String() string {
+	s := o.Process
+	if o.PID != "" {
+		s += " (pid " + o.PID + ")"
+	}
+	if o.Unit != "" {
+		s += " via " + o.Unit
+	}
+	return s
+}
+
+// PortOwner parses `ss -tlnp` and names the listener. Empty Process = free.
+func PortOwner(port int) Owner {
+	out, err := Output("ss", "-tlnp")
 	if err != nil {
-		return false
+		return Owner{}
 	}
 	needle := fmt.Sprintf(":%d", port)
 	for _, ln := range strings.Split(out, "\n") {
-		if strings.Contains(ln, "LISTEN") && strings.Contains(ln, needle) {
-			return true
+		if !strings.Contains(ln, "LISTEN") || !strings.Contains(ln, needle) {
+			continue
 		}
+		o := Owner{}
+		if i := strings.Index(ln, `users:(("`); i >= 0 {
+			rest := ln[i+len(`users:(("`):]
+			if j := strings.Index(rest, `"`); j >= 0 {
+				o.Process = rest[:j]
+			}
+			if k := strings.Index(rest, "pid="); k >= 0 {
+				p := rest[k+4:]
+				if j := strings.IndexAny(p, ",)"); j >= 0 {
+					o.PID = p[:j]
+				}
+			}
+		}
+		if o.Process == "" {
+			o.Process = "unknown process"
+		}
+		if u, err := Output("systemctl", "status", o.PID); err == nil {
+			for _, l := range strings.Split(u, "\n") {
+				if strings.Contains(l, ".service") {
+					f := strings.Fields(strings.TrimSpace(l))
+					if len(f) > 0 {
+						o.Unit = strings.Trim(f[0], "●")
+						break
+					}
+				}
+			}
+		}
+		return o
 	}
-	return false
+	return Owner{}
+}
+
+func portInUse(port int) bool { return PortOwner(port).Process != "" }
+
+// FreePort stops the service owning a port so the wizard can use it.
+// It refuses port 22 / sshd unconditionally and keeps file backups.
+func FreePort(ctx context.Context, port int, log *logx.Logger) error {
+	if port == 22 {
+		return fmt.Errorf("refusing to free port 22 (SSH keeps you connected)")
+	}
+	o := PortOwner(port)
+	if o.Process == "" {
+		log.OK(fmt.Sprintf("port %d already free", port))
+		return nil
+	}
+	if o.Process == "sshd" || strings.Contains(o.Unit, "ssh") {
+		return fmt.Errorf("refusing to free %s (SSH keeps you connected)", o.String())
+	}
+	if o.Unit != "" {
+		unit := o.Unit
+		if i := strings.Index(unit, " "); i >= 0 {
+			unit = unit[:i]
+		}
+		log.Info("%s", "stopping "+unit+" (files kept, service disabled)")
+		if err := Run(ctx, log, "systemctl", "stop", unit); err != nil {
+			return err
+		}
+		_ = Run(ctx, log, "systemctl", "disable", unit)
+		time.Sleep(2 * time.Second)
+	}
+	if still := PortOwner(port); still.Process != "" {
+		return fmt.Errorf("port %d still held by %s after stop; kill it manually", port, still.String())
+	}
+	log.OK(fmt.Sprintf("port %d is free now", port))
+	return nil
 }
 
 func (Conflicts) Check(c cfg.Config) Result {
-	if portInUse(c.Port) {
-		return Result{false, fmt.Sprintf("port %d is already bound (see check output)", c.Port)}
+	if o := PortOwner(c.Port); o.Process != "" {
+		return Result{false, fmt.Sprintf("port %d held by %s", c.Port, o.String())}
 	}
 	return Result{true, fmt.Sprintf("port %d is free", c.Port)}
 }
