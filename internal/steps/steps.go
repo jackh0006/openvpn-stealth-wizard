@@ -30,15 +30,17 @@ type Step interface {
 }
 
 // All returns install steps in runbook order.
+// NOTE: PasswordAuth MUST run before ServerConf, otherwise the first
+// restart fails with "check-pass.sh: No such file" (v0.5.0 boot-order fix).
 func All() []Step {
 	return []Step{
 		Dependencies{},
 		Preflight{},
 		Conflicts{},
 		PKI{},
+		PasswordAuth{},
 		ServerConf{},
 		WebCamouflage{},
-		PasswordAuth{},
 		Network{},
 		ClientBundle{},
 	}

@@ -101,7 +101,7 @@ func TestStepOrder(t *testing.T) {
 	for _, s := range All() {
 		got = append(got, s.ID())
 	}
-	want := []string{"deps", "preflight", "conflicts", "pki", "server", "web", "auth", "net", "client"}
+	want := []string{"deps", "preflight", "conflicts", "pki", "auth", "server", "web", "net", "client"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("runbook order changed: %v", got)
 	}

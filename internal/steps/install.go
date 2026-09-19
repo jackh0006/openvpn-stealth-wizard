@@ -254,7 +254,7 @@ data-ciphers AES-256-GCM:AES-128-GCM
 data-ciphers-fallback AES-256-GCM
 auth SHA256
 tls-version-min 1.2
-%s%s%sndbuf 0
+%ssndbuf 0
 rcvbuf 0
 tcp-nodelay
 tun-mtu %d
@@ -273,7 +273,7 @@ verb 3
 `, port, protoLine,
 		serverDir, serverDir, serverDir, serverDir, serverDir,
 		subnetIP(c.Subnet), subnetMask(c.Subnet), subnetIP(c.Subnet), subnetMask(c.Subnet),
-		dns1, dns2, authBlock, verifyLine, "", mtu, mss, portShare, exitNotify)
+		dns1, dns2, authBlock+verifyLine, mtu, mss, portShare, exitNotify)
 }
 
 func subnetIP(cidr string) string {
