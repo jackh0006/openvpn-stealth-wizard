@@ -6,9 +6,18 @@
 
 Beautiful terminal wizard that builds a **stealth OpenVPN server**: VPN on TCP
 port 443 with a real decoy website on the same port (port-share), password
-login, Cloudflare DNS, and an import-ready `.ovpn` with DNS-bypass fallback.
+/ cert-only / testing no-auth login, TCP+UDP+both protocols, custom ports,
+Cloudflare DNS, and import-ready `.ovpn` with DNS-bypass fallback.
 
-Born from a real deployment runbook. Every lesson is now code.
+Born from a real deployment runbook. Every lesson is now code. v0.5.0 fixes
+the “connects but no traffic” bug (WAN auto-detect, persistent NAT, MSS on
+egress, block-outside-dns) and adds a smart `--doctor`.
+
+> Like I'm 5: pick TCP-stealth (hides as a website, port 443) or UDP-fast
+> (quicker) or BOTH (two files, phone tries fast then stealth). Pick a login:
+> password+file (safest), file-only (easier), or no-login testing (insecure!).
+> Use IP now or domain later. Cloudflare MUST be grey cloud (DNS-only) for VPN
+> — orange cloud (proxied) breaks VPN. Every screen explains why + streams live logs.
 
 ## Installation (one command)
 

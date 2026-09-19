@@ -33,38 +33,69 @@ type Config struct {
 	Mode       Mode
 	Host       string // IP or domain, used in `remote` lines
 	Fallback   string // raw IP fallback appended as second remote (DNS-bypass)
-	Port       int
+	Port       int    // TCP port (stealth default 443)
+	Proto      string // tcp | udp | both (default tcp). udp uses UdpPort.
+	UdpPort    int    // UDP port when Proto is udp or both (default 1194)
 	VPNUser    string
 	VPNPass    string
-	NoPassword bool   // when true: cert-only, no password required
+	NoPassword bool // when true: cert-only, no password required
+	NoAuth     bool // when true: NO auth at all (testing only, insecure!)
 	Email      string // Let's Encrypt contact (domain mode)
 	Subnet     string // e.g. 10.8.0.0/24
 	OutDir     string // client bundle dir, e.g. /root/Open Code/OpenVPN
 	DNS1       string // primary pushed DNS
 	DNS2       string // secondary pushed DNS
+	Mtu        int    // tun-mtu (default 1400, LTE-safe)
+	Mss        int    // TCPMSS clamp (default 1200)
 }
 
 func Defaults() Config {
 	return Config{
-		Mode:   ModeDomain,
-		Port:   443,
-		Subnet: "10.8.0.0/24",
-		OutDir: "/root/Open Code/OpenVPN",
-		DNS1:   "1.1.1.1",
-		DNS2:   "1.0.0.1",
+		Mode:    ModeDomain,
+		Port:    443,
+		Proto:   "tcp",
+		UdpPort: 1194,
+		Subnet:  "10.8.0.0/24",
+		OutDir:  "/root/Open Code/OpenVPN",
+		DNS1:    "1.1.1.1",
+		DNS2:    "1.0.0.1",
+		Mtu:     1400,
+		Mss:     1200,
 	}
 }
 
 // Validate explains problems like a patient teacher.
 func (c Config) Validate() error {
 	if c.Port < 1 || c.Port > 65535 {
-		return fmt.Errorf("port %d out of range (1-65565... use 1-65535)", c.Port)
+		return fmt.Errorf("port %d out of range (1-65535... use 1-65535)", c.Port)
+	}
+	if c.UdpPort < 1 || c.UdpPort > 65535 {
+		return fmt.Errorf("udp-port %d out of range (1-65535)", c.UdpPort)
+	}
+	switch c.Proto {
+	case "", "tcp", "udp", "both":
+	default:
+		return fmt.Errorf("proto %q must be tcp, udp or both", c.Proto)
+	}
+	if c.Proto == "" {
+		c.Proto = "tcp"
+	}
+	if c.NoAuth && c.NoPassword {
+		return errors.New("pick only one: --no-auth (no login at all) or --no-password (cert-only), not both")
 	}
 	if strings.TrimSpace(c.VPNUser) == "" {
 		return errors.New("vpn username is empty")
 	}
-	if !c.NoPassword && len(c.VPNPass) < 8 {
-		return errors.New("vpn password must be at least 8 characters (or choose cert-only)")
+	if c.NoAuth {
+		// testing-only mode: no password needed at all.
+	} else if !c.NoPassword && len(c.VPNPass) < 8 {
+		return errors.New("vpn password must be at least 8 characters (or choose --no-password cert-only, or --no-auth testing-only)")
+	}
+	if c.Mtu != 0 && (c.Mtu < 1200 || c.Mtu > 1500) {
+		return fmt.Errorf("mtu %d out of range (1200-1500, recommended 1400 for LTE)", c.Mtu)
+	}
+	if c.Mss != 0 && (c.Mss < 1000 || c.Mss > 1460) {
+		return fmt.Errorf("mss %d out of range (1000-1460, recommended 1200)", c.Mss)
 	}
 	if _, _, err := net.ParseCIDR(c.Subnet); err != nil {
 		return fmt.Errorf("bad subnet %q: %w", c.Subnet, err)
@@ -133,16 +164,74 @@ func LoadLast() (Config, bool) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return Config{}, false
 	}
+	c.Normalize()
 	return c, true
 }
+// Normalize fills zero-values from Defaults (for old last.json files).
+func (c *Config) Normalize() {
+	d := Defaults()
+	if c.Proto == "" {
+		c.Proto = d.Proto
+	}
+	if c.UdpPort == 0 {
+		c.UdpPort = d.UdpPort
+	}
+	if c.Mtu == 0 {
+		c.Mtu = d.Mtu
+	}
+	if c.Mss == 0 {
+		c.Mss = d.Mss
+	}
+	if c.Subnet == "" {
+		c.Subnet = d.Subnet
+	}
+	if c.OutDir == "" {
+		c.OutDir = d.OutDir
+	}
+	if c.DNS1 == "" {
+		c.DNS1 = d.DNS1
+	}
+	if c.DNS2 == "" {
+		c.DNS2 = d.DNS2
+	}
+	if c.Port == 0 {
+		c.Port = d.Port
+	}
+}
+
 func (c Config) Remotes() []string {
-	out := []string{fmt.Sprintf("remote %s %s", c.Host, strconv.Itoa(c.Port))}
+	// Default: TCP remotes (backwards compatible). For udp/both callers
+	// use RemotesForProto. Proto "" means tcp.
+	return c.RemotesForProto("tcp")
+}
+
+// RemotesForProto returns `remote` lines for tcp or udp.
+func (c Config) RemotesForProto(proto string) []string {
+	port := c.Port
+	if proto == "udp" {
+		port = c.UdpPort
+		if port == 0 {
+			port = 1194
+		}
+	}
+	// OpenVPN client uses `proto tcp-client` / `udp`, but the `remote`
+	// line itself is just host+port. We keep proto suffix out for compat
+	// with older bundles; proto is set by the `proto` directive.
+	out := []string{fmt.Sprintf("remote %s %s", c.Host, strconv.Itoa(port))}
 	fb := c.Fallback
 	if c.Mode == ModeIP {
 		fb = ""
 	}
 	if fb != "" && fb != c.Host {
-		out = append(out, fmt.Sprintf("remote %s %s", fb, strconv.Itoa(c.Port)))
+		out = append(out, fmt.Sprintf("remote %s %s", fb, strconv.Itoa(port)))
 	}
 	return out
+}
+
+// EffectiveProto normalises empty to tcp.
+func (c Config) EffectiveProto() string {
+	if c.Proto == "" {
+		return "tcp"
+	}
+	return c.Proto
 }

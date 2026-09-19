@@ -72,10 +72,16 @@ func (Uninstall) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) erro
 			}
 		}
 	}
+	// Explicitly cover split TCP+UDP names even if dir listing raced.
+	for _, u := range []string{"openvpn-server@server", "openvpn-server@server-udp"} {
+		_ = Run(ctx, log, "systemctl", "stop", u)
+		_ = Run(ctx, log, "systemctl", "disable", u)
+	}
 
 	// 3. Remove wizard files (never SSH, never last.json)
 	removeAll := []string{
 		"/etc/openvpn/server/server.conf",
+		"/etc/openvpn/server/server-udp.conf",
 		"/etc/openvpn/server/server.conf.bak-wizard",
 		"/etc/openvpn/server/ca.crt",
 		"/etc/openvpn/server/server.crt",
@@ -118,11 +124,11 @@ func (Uninstall) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) erro
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 	_ = exec.Command("systemctl", "reload-or-restart", "nginx").Run()
 
-	// 4. UFW route rules (only ours)
-	_ = Run(ctx, log, "sh", "-c", "ufw route delete allow in on tun0 out on enp1s0 from 10.8.0.0/24 2>/dev/null; ufw route delete allow in on enp1s0 out on tun0 to 10.8.0.0/24 2>/dev/null; echo cleaned-ufw")
+	// 4. UFW route rules (only ours) — cover all historic patterns.
+	_ = Run(ctx, log, "sh", "-c", "for nic in enp1s0 eth0 ens3 ens4 venet0 lo; do ufw route delete allow in on tun0 out on $nic from 10.8.0.0/24 2>/dev/null; ufw route delete allow in on $nic out on tun0 to 10.8.0.0/24 2>/dev/null; ufw route delete allow in on tun+ out on $nic from 10.8.0.0/24 2>/dev/null; ufw route delete allow in on $nic out on tun+ to 10.8.0.0/24 2>/dev/null; done; echo cleaned-ufw")
 
-	// 5. Mangle MSS clamp rules
-	_ = Run(ctx, log, "sh", "-c", "iptables -t mangle -D FORWARD -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null; iptables -t mangle -D FORWARD -i tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null; echo cleaned-mangle")
+	// 5. Mangle MSS clamp rules (all historic + current tun+/tun0 patterns).
+	_ = Run(ctx, log, "sh", "-c", "for d in tun0 tun+; do iptables -t mangle -D FORWARD -o $d -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null; iptables -t mangle -D FORWARD -i $d -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null; done; echo cleaned-mangle")
 
 	// 6. Bundles: remove .ovpn dir content (ask caller to confirm with flag)
 	if _, err := os.Stat("/root/Open Code/OpenVPN"); err == nil {

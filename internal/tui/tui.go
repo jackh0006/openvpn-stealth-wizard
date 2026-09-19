@@ -153,6 +153,7 @@ func New() Model {
 			c = last
 		}
 	}
+	c.Normalize()
 	dnsVal := "cloudflare (1.1.1.1)"
 	if c.DNS1 == "8.8.8.8" {
 		dnsVal = "google (8.8.8.8)"
@@ -345,15 +346,17 @@ func (m *Model) validateForm() bool {
 	m.fieldErrs = [7]string{}
 	m.errMsg = ""
 	c := m.cfg
+	c.Normalize()
+	m.cfg = c
 	bad := func(i int, msg string) {
 		m.fieldErrs[i] = msg
 	}
 	if c.Mode == cfg.ModeDomain {
 		if strings.Contains(c.Host, " ") || !strings.Contains(c.Host, ".") {
-			bad(0, "does not look like a domain")
+			bad(0, "does not look like a domain — TIP: Cloudflare A record vpn.example.com → VPS-IP, grey cloud (DNS-only) for VPN")
 		}
 		if c.Fallback != "" && !validIP(c.Fallback) {
-			bad(1, "not an IP address")
+			bad(1, "not an IP address — this is the DNS-bypass fallback (your VPS IP)")
 		}
 		if !strings.Contains(c.Email, "@") {
 			bad(6, "email needed for the free certificate")
@@ -364,13 +367,13 @@ func (m *Model) validateForm() bool {
 		}
 	}
 	if c.Port < 1 || c.Port > 65535 {
-		bad(2, "use 1-65535 (443 recommended)")
+		bad(2, "use 1-65535 (443 recommended stealth, any custom allowed)")
 	}
 	if strings.TrimSpace(c.VPNUser) == "" {
 		bad(3, "username is empty")
 	}
-	if !c.NoPassword && len(c.VPNPass) < 8 {
-		bad(4, "at least 8 characters (or ctrl+n for cert-only)")
+	if !c.NoAuth && !c.NoPassword && len(c.VPNPass) < 8 {
+		bad(4, "at least 8 characters (or ctrl+n cert-only, ctrl+o no-auth test)")
 	}
 	dnsRaw := strings.TrimSpace(m.inputs[5].Value())
 	if dnsRaw != "" && !strings.HasPrefix(strings.ToLower(dnsRaw), "cloudflare") && !strings.HasPrefix(strings.ToLower(dnsRaw), "google") && !strings.HasPrefix(strings.ToLower(dnsRaw), "quad9") && !strings.HasPrefix(strings.ToLower(dnsRaw), "adguard") {
@@ -478,10 +481,35 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+n":
 			m.cfg.NoPassword = !m.cfg.NoPassword
 			if m.cfg.NoPassword {
+				m.cfg.NoAuth = false
 				m.inputs[4].SetValue("")
-				m.detectNote = "cert-only mode: no password will be required"
+				m.detectNote = "cert-only mode: no password will be required (phone file alone is enough)"
 			} else {
 				m.detectNote = "password mode: set a password (ctrl+g to suggest one)"
+			}
+			return m, nil
+		case "ctrl+o":
+			m.cfg.NoAuth = !m.cfg.NoAuth
+			if m.cfg.NoAuth {
+				m.cfg.NoPassword = false
+				m.inputs[4].SetValue("")
+				m.detectNote = "NO-AUTH testing mode (INSECURE!): anyone with .ovpn can connect. Only for testing!"
+			} else {
+				m.detectNote = "auth restored: set a password (ctrl+g suggests one)"
+			}
+			return m, nil
+		case "ctrl+p":
+			// Cycle proto tcp -> udp -> both. Like choosing stealth vs speed.
+			switch m.cfg.EffectiveProto() {
+			case "tcp":
+				m.cfg.Proto = "udp"
+				m.detectNote = "protocol: UDP fast (port " + strconv.Itoa(m.cfg.UdpPort) + ") — faster, less stealth"
+			case "udp":
+				m.cfg.Proto = "both"
+				m.detectNote = "protocol: BOTH (TCP " + strconv.Itoa(m.cfg.Port) + " stealth + UDP " + strconv.Itoa(m.cfg.UdpPort) + " fast) — two .ovpn files"
+			default:
+				m.cfg.Proto = "tcp"
+				m.detectNote = "protocol: TCP stealth (port " + strconv.Itoa(m.cfg.Port) + ", looks like a website) — best for blocked networks"
 			}
 			return m, nil
 		case "ctrl+d":
@@ -503,7 +531,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// Auto-offer suggested password if empty/insecure at final submit.
-			if len(m.cfg.VPNPass) < 8 {
+			// Skip when cert-only or no-auth (no password needed by design).
+			if !m.cfg.NoAuth && !m.cfg.NoPassword && len(m.cfg.VPNPass) < 8 {
 				m.inputs[4].SetValue(suggestPassword())
 				m.applyForm()
 				m.detectNote = "filled a strong password for you — press enter again to confirm"
@@ -854,10 +883,24 @@ func (m Model) View() string {
 		sb.WriteString(helpStyle.Render("\n↑/↓ choose • enter confirm • ") + back)
 	case stageForm:
 		pwLabel := "VPN password"
-		if m.cfg.NoPassword {
+		authLine := "password+cert (most secure)"
+		if m.cfg.NoAuth {
+			pwLabel = "VPN password (NO-AUTH testing, disabled — INSECURE!)"
+			authLine = "NO-AUTH testing (INSECURE! anyone with .ovpn connects)"
+		} else if m.cfg.NoPassword {
 			pwLabel = "VPN password (cert-only, disabled)"
+			authLine = "cert-only (phone file alone is enough)"
 		}
-		sb.WriteString(fmt.Sprintf("Setup inputs  (mode: %s, ctrl+d switches ip/domain, ctrl+n toggles cert-only)\n", m.cfg.Mode))
+		protoLine := m.cfg.EffectiveProto()
+		protoHint := "TCP stealth 443 (looks like website)"
+		if protoLine == "udp" {
+			protoHint = fmt.Sprintf("UDP fast %d (faster, less stealth)", m.cfg.UdpPort)
+		} else if protoLine == "both" {
+			protoHint = fmt.Sprintf("BOTH: TCP %d stealth + UDP %d fast (2 files)", m.cfg.Port, m.cfg.UdpPort)
+		}
+		sb.WriteString(fmt.Sprintf("Setup inputs  (mode: %s | proto: %s | auth: %s)\n", m.cfg.Mode, protoHint, authLine))
+		sb.WriteString(helpStyle.Render("  ctrl+d ip/domain • ctrl+p protocol (tcp/udp/both) • ctrl+n cert-only • ctrl+o no-auth test • ctrl+g suggest password\n"))
+		sb.WriteString(helpStyle.Render("  Cloudflare: grey cloud (DNS-only) = VPN works. Orange cloud (proxied) = VPN breaks!\n"))
 		if m.detectNote != "" {
 			sb.WriteString(warnStyle.Render("★ "+m.detectNote) + "\n")
 		}
@@ -866,11 +909,19 @@ func (m Model) View() string {
 		for i := range m.inputs {
 			hint := ""
 			if i == 4 {
-				if m.cfg.NoPassword {
+				if m.cfg.NoAuth {
+					hint = "  (no-auth — press ctrl+o to restore password)"
+				} else if m.cfg.NoPassword {
 					hint = "  (cert-only — press ctrl+n to enable password)"
 				} else {
-					hint = "  (ctrl+g suggests a strong password, ctrl+n for cert-only)"
+					hint = "  (ctrl+g suggests, ctrl+n cert-only, ctrl+o no-auth test)"
 				}
+			}
+			if i == 2 {
+				hint = fmt.Sprintf("  (TCP port, 443 stealth recommended, any 1-65535; UDP port %d when proto=udp/both)", m.cfg.UdpPort)
+			}
+			if i == 5 {
+				hint = "  (cloudflare/google/quad9/adguard or two IPs — pushed to phones)"
 			}
 			lbl := labels[i]
 			if i == 4 {
@@ -885,13 +936,24 @@ func (m Model) View() string {
 		if m.errMsg != "" {
 			sb.WriteString(errStyle.Render("⚠ "+m.errMsg) + "\n\n")
 		}
-		sb.WriteString(helpStyle.Render("type to edit • tab next field • ctrl+g suggest password • ctrl+n cert-only • enter continue • ") + back)
+		sb.WriteString(helpStyle.Render("type to edit • tab next field • enter continue • live logs stream on next screen • ") + back)
 	case stageReview:
-		sb.WriteString("Plan preview — I will do exactly this:\n\n")
+		sb.WriteString("Plan preview — I will do exactly this (live logs stream each command):\n\n")
 		for i, s := range steps.All() {
 			sb.WriteString(fmt.Sprintf("  %d. %s\n     %s\n", i+1, s.Title(), whyStyle.Render(s.Why())))
 		}
-		sb.WriteString(fmt.Sprintf("\nTarget: %s %s:%d → %s\n", m.cfg.Mode, m.cfg.Host, m.cfg.Port, m.cfg.OutDir))
+		authDesc := "password+cert"
+		if m.cfg.NoAuth {
+			authDesc = "NO-AUTH testing (INSECURE!)"
+		} else if m.cfg.NoPassword {
+			authDesc = "cert-only"
+		}
+		sb.WriteString(fmt.Sprintf("\nTarget: %s %s TCP:%d proto=%s auth=%s dns=%s,%s mtu=%d mss=%d → %s\n",
+			m.cfg.Mode, m.cfg.Host, m.cfg.Port, m.cfg.EffectiveProto(), authDesc, m.cfg.DNS1, m.cfg.DNS2, effectiveMtuTUI(m.cfg), effectiveMssTUI(m.cfg), m.cfg.OutDir))
+		sb.WriteString(helpStyle.Render("  Cloudflare reminder: grey cloud (DNS-only) for VPN hostname; orange cloud breaks VPN.\n"))
+		if m.cfg.Fallback != "" {
+			sb.WriteString(helpStyle.Render("  Fallback IP "+m.cfg.Fallback+" will be added as 2nd remote (DNS-bypass when carrier blocks DNS).\n"))
+		}
 		if m.portWarn != "" {
 			sb.WriteString(warnStyle.Render("⚠ "+m.portWarn) + "\n")
 		}
@@ -960,17 +1022,29 @@ func (m Model) View() string {
 		if dlHost == "" {
 			dlHost = m.cfg.Host
 		}
-		ovpn := manage.BundleRoot + "/" + m.cfg.VPNUser + ".ovpn"
-		sb.WriteString("\n\n" + warnStyle.Render("Get the file on your device:") + "\n")
-		sb.WriteString(fmt.Sprintf("  scp root@%s:\"%s\" ./%s.ovpn\n", dlHost, ovpn, m.cfg.VPNUser))
-		sb.WriteString(fmt.Sprintf("  If scp asks for a password: your VPS root password. With a key: scp -i ~/.ssh/id_rsa root@%s:\"%s\" ./%s.ovpn\n", dlHost, ovpn, m.cfg.VPNUser))
-		sb.WriteString(fmt.Sprintf("  Then on the phone: OpenVPN app → Import %s.ovpn → ", m.cfg.VPNUser))
-		if m.cfg.NoPassword {
+		sb.WriteString("\n\n" + warnStyle.Render("Get the file on your device (live logs above show every command that ran):") + "\n")
+		if m.cfg.EffectiveProto() == "both" {
+			for _, suffix := range []string{"-tcp", "-udp"} {
+				ovpn := manage.BundleRoot + "/" + m.cfg.VPNUser + suffix + ".ovpn"
+				sb.WriteString(fmt.Sprintf("  scp root@%s:\"%s\" ./%s%s.ovpn\n", dlHost, ovpn, m.cfg.VPNUser, suffix))
+			}
+			sb.WriteString("  TIP: try -udp first (faster). If blocked, use -tcp (stealth 443).\n")
+		} else {
+			ovpn := manage.BundleRoot + "/" + m.cfg.VPNUser + ".ovpn"
+			sb.WriteString(fmt.Sprintf("  scp root@%s:\"%s\" ./%s.ovpn\n", dlHost, ovpn, m.cfg.VPNUser))
+		}
+		sb.WriteString(fmt.Sprintf("  With a key: scp -i ~/.ssh/id_rsa root@%s:\"%s\" ./\n", dlHost, manage.BundleRoot+"/"+m.cfg.VPNUser+"*.ovpn"))
+		sb.WriteString(fmt.Sprintf("  Then on the phone: OpenVPN app → Import → "))
+		if m.cfg.NoAuth {
+			sb.WriteString("connect (NO-AUTH testing, insecure!).\n")
+		} else if m.cfg.NoPassword {
 			sb.WriteString("connect (cert-only, no password).\n")
 		} else {
 			sb.WriteString(fmt.Sprintf("user %s → password you set.\n", m.cfg.VPNUser))
 		}
-		sb.WriteString(warnStyle.Render("  Need help?  ") + "wizard --help  •  wizard --manage list  •  wizard --check\n")
+		sb.WriteString(warnStyle.Render("  No traffic? ") + "Run: sudo wizard --non-interactive --yes --fix ... (same flags) — fixes NAT/forwarding/MSS.\n")
+		sb.WriteString(warnStyle.Render("  Cloudflare: ") + "grey cloud (DNS-only) for VPN; orange cloud breaks VPN.\n")
+		sb.WriteString(warnStyle.Render("  Need help?  ") + "wizard --help  •  wizard --doctor  •  wizard --manage logs --follow\n")
 		sb.WriteString(helpStyle.Render("\nenter quit • ") + back)
 	}
 	return sb.String()
@@ -981,6 +1055,20 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func effectiveMtuTUI(c cfg.Config) int {
+	if c.Mtu == 0 {
+		return 1400
+	}
+	return c.Mtu
+}
+
+func effectiveMssTUI(c cfg.Config) int {
+	if c.Mss == 0 {
+		return 1200
+	}
+	return c.Mss
 }
 
 func suggestPassword() string {

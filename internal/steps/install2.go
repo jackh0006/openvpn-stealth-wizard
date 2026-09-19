@@ -34,6 +34,10 @@ exit 1
 `
 
 func (PasswordAuth) Check(c cfg.Config) Result {
+	c.Normalize()
+	if c.NoAuth {
+		return Result{true, "no-auth testing mode (anyone with .ovpn can connect — insecure!)"}
+	}
 	if c.NoPassword {
 		return Result{true, "cert-only mode (no password)"}
 	}
@@ -49,6 +53,14 @@ func (PasswordAuth) Check(c cfg.Config) Result {
 }
 
 func (PasswordAuth) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) error {
+	c.Normalize()
+	if c.NoAuth {
+		log.Info("NO-AUTH testing mode: skipping password setup. WARNING: anyone with the .ovpn can connect!")
+		// Remove stale auth script reference is handled by ServerConf template.
+		// Keep users dir for later switch back to password mode.
+		_ = os.MkdirAll(usersDir, 0o755)
+		return nil
+	}
 	if c.NoPassword {
 		log.OK("cert-only mode — no password to set")
 		return nil
@@ -71,6 +83,23 @@ func (PasswordAuth) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) e
 	return nil
 }
 
+// detectWAN returns the egress interface (e.g. eth0, ens3, enp1s0).
+// Old code hardcoded enp1s0 which broke every VPS with a different NIC.
+func detectWAN() string {
+	if out, err := Output("sh", "-c", "ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i==\"dev\") print $(i+1)}'"); err == nil {
+		if wan := strings.TrimSpace(out); wan != "" {
+			return strings.Fields(wan)[0]
+		}
+	}
+	// Fallback: default route dev.
+	if out, err := Output("sh", "-c", "ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i==\"dev\") print $(i+1)}'"); err == nil {
+		if wan := strings.TrimSpace(out); wan != "" {
+			return strings.Fields(wan)[0]
+		}
+	}
+	return "eth0"
+}
+
 // Network enables forwarding, NAT masquerade (persisted), UFW routes
 // and the kernel route back into the tunnel.
 type Network struct{}
@@ -82,37 +111,106 @@ func (Network) Why() string {
 }
 
 func (Network) Check(c cfg.Config) Result {
+	c.Normalize()
 	out, _ := Output("iptables", "-t", "nat", "-L", "POSTROUTING", "-n")
-	if !strings.Contains(out, c.Subnet) && !strings.Contains(out, "10.8.0.0") {
-		return Result{false, "NAT masquerade missing"}
+	if !strings.Contains(out, c.Subnet) {
+		// Backwards compat: old installs used 10.8.0.0/24 literally.
+		if !strings.Contains(out, "10.8.0.0") {
+			return Result{false, "NAT masquerade missing for " + c.Subnet}
+		}
 	}
-	out, _ = Output("ip", "route", "get", "10.8.0.2")
-	if !strings.Contains(out, "tun0") {
-		return Result{false, "no kernel route back into tun0"}
+	// Derive gateway IP from subnet (10.8.0.0/24 -> 10.8.0.1, ping the .2 client route).
+	gwProbe := "10.8.0.2"
+	if ip := subnetIP(c.Subnet); ip != "" {
+		// Replace last octet with 2 for probe.
+		if parts := strings.Split(ip, "."); len(parts) == 4 {
+			gwProbe = strings.Join([]string{parts[0], parts[1], parts[2], "2"}, ".")
+		}
 	}
-	return Result{true, "NAT + return route present"}
+	out, _ = Output("ip", "route", "get", gwProbe)
+	if !strings.Contains(out, "tun") {
+		return Result{false, "no kernel route back into tunnel (tun?)"}
+	}
+	// Forwarding flag.
+	if fwd, _ := os.ReadFile("/proc/sys/net/ipv4/ip_forward"); strings.TrimSpace(string(fwd)) != "1" {
+		return Result{false, "ip_forward is 0 (forwarding off)"}
+	}
+	return Result{true, "NAT + return route + forwarding present"}
 }
 
 func (Network) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) error {
+	c.Normalize()
+	wan := detectWAN()
+	log.Info("egress interface detected: %s (auto, not hardcoded)", wan)
+	mss := c.Mss
+	if mss == 0 {
+		mss = 1200
+	}
+	// 1. Persistent forwarding (old code only wrote /proc, lost on reboot).
+	sysctlConf := "net.ipv4.ip_forward=1\nnet.ipv4.conf.all.forwarding=1\n"
+	if err := os.WriteFile("/etc/sysctl.d/99-wizard.conf", []byte(sysctlConf), 0o644); err != nil {
+		log.Dim("sysctl.d write failed: " + err.Error())
+	} else {
+		_ = Run(ctx, log, "sysctl", "--system")
+	}
 	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0o644); err != nil {
 		log.Dim("ip_forward write skipped: " + err.Error())
 	}
+	// 2. NAT masquerade (idempotent with -C check).
 	natArgs := []string{"-t", "nat", "-A", "POSTROUTING",
 		"-s", c.Subnet, "!", "-d", c.Subnet, "-j", "MASQUERADE"}
-	if out, _ := Output("iptables", "-t", "nat", "-L", "POSTROUTING", "-n"); !strings.Contains(out, c.Subnet) {
-		if err := Run(ctx, log, "iptables", natArgs...); err != nil {
-			return fmt.Errorf("masquerade failed: %w", err)
+	if out, _ := Output("iptables", "-t", "nat", "-C", "POSTROUTING",
+		"-s", c.Subnet, "!", "-d", c.Subnet, "-j", "MASQUERADE"); !strings.Contains(out, "") || true {
+		// -C returns non-zero when missing; use exit code, not output.
+		if err := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
+			"-s", c.Subnet, "!", "-d", c.Subnet, "-j", "MASQUERADE").Run(); err != nil {
+			if err := Run(ctx, log, "iptables", natArgs...); err != nil {
+				return fmt.Errorf("masquerade failed: %w", err)
+			}
+		} else {
+			log.Dim("masquerade already present")
+		}
+	}
+	// 3. Firewall: allow inbound VPN ports + forward between tun and WAN.
+	// Old code never opened the inbound port and hardcoded enp1s0.
+	proto := c.EffectiveProto()
+	tcpPort, udpPort := c.Port, c.UdpPort
+	if _, err := exec.LookPath("ufw"); err == nil {
+		if proto == "tcp" || proto == "both" {
+			_ = Run(ctx, log, "ufw", "allow", fmt.Sprintf("%d/tcp", tcpPort))
+		}
+		if proto == "udp" || proto == "both" {
+			if udpPort == 0 {
+				udpPort = 1194
+			}
+			_ = Run(ctx, log, "ufw", "allow", fmt.Sprintf("%d/udp", udpPort))
+		}
+		_ = Run(ctx, log, "ufw", "route", "allow", "in", "on", "tun+", "out", "on", wan, "from", c.Subnet)
+		_ = Run(ctx, log, "ufw", "route", "allow", "in", "on", wan, "out", "on", "tun+", "to", c.Subnet)
+		// Legacy cleanup: remove stale enp1s0 rules if WAN differs.
+		if wan != "enp1s0" {
+			_ = Run(ctx, log, "sh", "-c", "ufw route delete allow in on tun0 out on enp1s0 from "+c.Subnet+" 2>/dev/null; true")
+		}
+		// Ensure forwarding policy allows routed traffic.
+		if data, err := os.ReadFile("/etc/default/ufw"); err == nil {
+			if strings.Contains(string(data), `DEFAULT_FORWARD_POLICY="DROP"`) {
+				backup("/etc/default/ufw", log)
+				s := strings.ReplaceAll(string(data), `DEFAULT_FORWARD_POLICY="DROP"`, `DEFAULT_FORWARD_POLICY="ACCEPT"`)
+				_ = os.WriteFile("/etc/default/ufw", []byte(s), 0o644)
+				log.Dim("ufw forward policy DROP -> ACCEPT (needed for VPN routing)")
+				_ = Run(ctx, log, "ufw", "reload")
+			}
 		}
 	} else {
-		log.Dim("masquerade already present")
+		log.Dim("ufw not installed, skipping ufw rules (iptables NAT still applied)")
 	}
-	if _, err := exec.LookPath("ufw"); err == nil {
-		_ = Run(ctx, log, "ufw", "route", "allow", "in", "on", "tun0", "out", "on", "enp1s0", "from", c.Subnet)
-		_ = Run(ctx, log, "ufw", "route", "allow", "in", "on", "enp1s0", "out", "on", "tun0", "to", c.Subnet)
-	}
-	// Carrier-proof: clamp MSS so even stale bundles (1500) cannot stall on LTE.
-	_ = Run(ctx, log, "sh", "-c", "iptables -t mangle -C FORWARD -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null || iptables -t mangle -A FORWARD -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200")
-	_ = Run(ctx, log, "sh", "-c", "iptables -t mangle -C FORWARD -i tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null || iptables -t mangle -A FORWARD -i tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200")
+	// 4. FORWARD ACCEPT for tun<>WAN when UFW is inactive (bare iptables).
+	_ = Run(ctx, log, "sh", "-c", fmt.Sprintf("iptables -C FORWARD -i tun+ -o %s -s %s -j ACCEPT 2>/dev/null || iptables -A FORWARD -i tun+ -o %s -s %s -j ACCEPT", wan, c.Subnet, wan, c.Subnet))
+	_ = Run(ctx, log, "sh", "-c", fmt.Sprintf("iptables -C FORWARD -i %s -o tun+ -d %s -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i %s -o tun+ -d %s -m state --state RELATED,ESTABLISHED -j ACCEPT", wan, c.Subnet, wan, c.Subnet))
+	// 5. Carrier-proof MSS clamp on tun AND egress (old code only did tun0).
+	_ = Run(ctx, log, "sh", "-c", fmt.Sprintf("iptables -t mangle -C FORWARD -o tun+ -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d 2>/dev/null || iptables -t mangle -A FORWARD -o tun+ -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d", mss, mss))
+	_ = Run(ctx, log, "sh", "-c", fmt.Sprintf("iptables -t mangle -C FORWARD -i tun+ -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d 2>/dev/null || iptables -t mangle -A FORWARD -i tun+ -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d", mss, mss))
+	_ = Run(ctx, log, "sh", "-c", fmt.Sprintf("iptables -t mangle -C FORWARD -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d 2>/dev/null || iptables -t mangle -A FORWARD -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d", wan, mss, wan, mss))
 	unit := `[Unit]
 Description=Restore VPN NAT rules (wizard)
 After=network.target
@@ -128,11 +226,17 @@ WantedBy=multi-user.target
 		_ = Run(ctx, log, "systemctl", "daemon-reload")
 		_ = Run(ctx, log, "systemctl", "enable", "vpn-nat-restore")
 	}
-	out, _ := Output("ip", "route", "get", "10.8.0.2")
-	if !strings.Contains(out, "tun0") {
-		return fmt.Errorf("return route still missing after server restart; check server.conf route line")
+	gwProbe := "10.8.0.2"
+	if ip := subnetIP(c.Subnet); ip != "" {
+		if parts := strings.Split(ip, "."); len(parts) == 4 {
+			gwProbe = strings.Join([]string{parts[0], parts[1], parts[2], "2"}, ".")
+		}
 	}
-	log.OK("forwarding + NAT verified")
+	out, _ := Output("ip", "route", "get", gwProbe)
+	if !strings.Contains(out, "tun") {
+		return fmt.Errorf("return route still missing after server restart; check server.conf route line (probe %s -> %s)", gwProbe, out)
+	}
+	log.OK("forwarding + NAT verified (wan=" + wan + ")")
 	return nil
 }
 
@@ -158,20 +262,53 @@ func clientCertPaths() (cert, key string, err error) {
 }
 
 func (ClientBundle) Check(c cfg.Config) Result {
-	ovpn := filepath.Join(c.OutDir, c.VPNUser+".ovpn")
-	b, err := os.ReadFile(ovpn)
-	if err != nil {
-		return Result{false, "bundle missing"}
+	c.Normalize()
+	proto := c.EffectiveProto()
+	// Check all expected bundles.
+	expected := []string{}
+	if proto == "both" {
+		expected = []string{
+			filepath.Join(c.OutDir, c.VPNUser+"-tcp.ovpn"),
+			filepath.Join(c.OutDir, c.VPNUser+"-udp.ovpn"),
+		}
+		// Legacy single file also counts as partial.
+		legacy := filepath.Join(c.OutDir, c.VPNUser+".ovpn")
+		if fileExists(legacy) && !fileExists(expected[0]) {
+			b, _ := os.ReadFile(legacy)
+			for _, r := range c.Remotes() {
+				if !strings.Contains(string(b), r) {
+					return Result{false, "bundle lacks: " + r}
+				}
+			}
+			return Result{true, "bundle ready (legacy single-file): " + legacy + " — re-run --fix for split TCP+UDP bundles"}
+		}
+	} else {
+		expected = []string{filepath.Join(c.OutDir, c.VPNUser+".ovpn")}
 	}
-	for _, r := range c.Remotes() {
-		if !strings.Contains(string(b), r) {
-			return Result{false, "bundle lacks: " + r}
+	for _, ovpn := range expected {
+		b, err := os.ReadFile(ovpn)
+		if err != nil {
+			return Result{false, "bundle missing: " + ovpn}
+		}
+		wantProto := proto
+		if proto == "both" {
+			if strings.Contains(ovpn, "-udp.") {
+				wantProto = "udp"
+			} else {
+				wantProto = "tcp"
+			}
+		}
+		for _, r := range c.RemotesForProto(wantProto) {
+			if !strings.Contains(string(b), r) {
+				return Result{false, "bundle lacks: " + r + " in " + ovpn}
+			}
 		}
 	}
-	return Result{true, "bundle ready: " + ovpn}
+	return Result{true, "bundle ready: " + strings.Join(expected, ", ")}
 }
 
 func (ClientBundle) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) error {
+	c.Normalize()
 	certP, keyP, err := clientCertPaths()
 	if err != nil {
 		return err
@@ -196,16 +333,37 @@ func (ClientBundle) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) e
 	if err != nil {
 		return err
 	}
-	var sb strings.Builder
-	sb.WriteString("client\ndev tun\nproto tcp-client\n")
-	for _, r := range c.Remotes() {
-		sb.WriteString(r + "\n")
+	if err := os.MkdirAll(c.OutDir, 0o755); err != nil {
+		return err
 	}
-	authLines := ""
-	if !c.NoPassword {
-		authLines = "auth-user-pass\nauth-nocache\n"
+	proto := c.EffectiveProto()
+	mtu, mss := c.Mtu, c.Mss
+	if mtu == 0 {
+		mtu = 1400
 	}
-	sb.WriteString(`resolv-retry infinite
+	if mss == 0 {
+		mss = 1200
+	}
+	buildOne := func(which string) (string, error) {
+		clientProto := "tcp-client"
+		if which == "udp" {
+			clientProto = "udp"
+		}
+		var sb strings.Builder
+		sb.WriteString("client\ndev tun\nproto " + clientProto + "\n")
+		for _, r := range c.RemotesForProto(which) {
+			sb.WriteString(r + "\n")
+		}
+		authLines := ""
+		if c.NoAuth {
+			authLines = "# no-auth testing mode: no username/password needed\n"
+		} else if !c.NoPassword {
+			authLines = "auth-user-pass\nauth-nocache\n"
+		} else {
+			authLines = "# cert-only mode: no auth-user-pass needed\n"
+		}
+		sb.WriteString(`resolv-retry infinite
+remote-random
 server-poll-timeout 10
 connect-retry 5 60
 nobind
@@ -219,23 +377,81 @@ tls-version-min 1.2
 verb 3
 sndbuf 0
 rcvbuf 0
-tcp-nodelay
-tun-mtu 1400
-mssfix 1200
-keepalive 10 60
 explicit-exit-notify 0
+tun-mtu ` + itoa(mtu) + `
+mssfix ` + itoa(mss) + `
+keepalive 10 60
 <ca>
 ` + ca + "\n</ca>\n<cert>\n" + cert + "\n</cert>\n<key>\n" + key + "\n</key>\n<tls-crypt>\n" + tls + "\n</tls-crypt>\n")
-	if err := os.MkdirAll(c.OutDir, 0o755); err != nil {
-		return err
+		// Block-outside-dns is Windows-only; including it breaks Android import
+		// on some clients, so we add it as a comment + server already pushes it.
+		sb.WriteString("# NOTE: server pushes block-outside-dns + DNS " + c.DNS1 + " — no client change needed.\n")
+		suffix := ""
+		if proto == "both" {
+			suffix = "-" + which
+		}
+		ovpn := filepath.Join(c.OutDir, c.VPNUser+suffix+".ovpn")
+		if err := os.WriteFile(ovpn, []byte(sb.String()), 0o644); err != nil {
+			return "", err
+		}
+		return ovpn, nil
 	}
-	ovpn := filepath.Join(c.OutDir, c.VPNUser+".ovpn")
-	if err := os.WriteFile(ovpn, []byte(sb.String()), 0o644); err != nil {
-		return err
+	var made []string
+	if proto == "both" {
+		for _, w := range []string{"tcp", "udp"} {
+			p, err := buildOne(w)
+			if err != nil {
+				return err
+			}
+			made = append(made, p)
+			log.OK("bundle (" + w + "): " + p)
+		}
+	} else {
+		p, err := buildOne(proto)
+		if err != nil {
+			return err
+		}
+		made = append(made, p)
+		log.OK("bundle: " + p)
 	}
-	readme := "VPN login for " + c.VPNUser + "\nImport " + c.VPNUser + ".ovpn, user " +
-		c.VPNUser + ". Website https://" + c.Host + "/ still works in browsers.\n"
+	readme := "VPN login for " + c.VPNUser + " (" + proto + ")\n"
+	for _, m := range made {
+		readme += "Import " + filepath.Base(m) + "\n"
+	}
+	if c.NoAuth {
+		readme += "NO-AUTH testing mode: just import and connect, no password. WARNING: insecure, use only for testing!\n"
+	} else if c.NoPassword {
+		readme += "Cert-only: import and connect, no password.\n"
+	} else {
+		readme += "Login: user " + c.VPNUser + " + your password.\n"
+	}
+	if proto == "both" {
+		readme += "TIP: try UDP first (faster). If the network blocks UDP, switch to the -tcp file (stealth on port " + itoa(c.Port) + ").\n"
+	}
+	readme += "Website https://" + c.Host + "/ still works in browsers (decoy).\n"
+	readme += "Cloudflare: use DNS-only (grey cloud) for the VPN hostname. Orange cloud (proxied) breaks VPN.\n"
 	_ = os.WriteFile(filepath.Join(c.OutDir, "README-IMPORT.txt"), []byte(readme), 0o644)
-	log.OK("bundle: " + ovpn)
 	return nil
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	s := ""
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	for n > 0 {
+		s = string(rune('0'+n%10)) + s
+		n /= 10
+	}
+	if neg {
+		s = "-" + s
+	}
+	if s == "" {
+		return "0"
+	}
+	return s
 }

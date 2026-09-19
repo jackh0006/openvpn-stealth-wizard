@@ -1,6 +1,13 @@
 # Changelog — newest on top, plain words.
 
-## v0.4.1 (2026-09-18)
+## v0.5.0 (2026-09-19) — traffic fix + smart wizard
+- FIXED no-traffic bug (connects but 0 bytes): auto-detect WAN (was hardcoded enp1s0), persistent ip_forward via sysctl.d, UFW allow inbound + tun+/WAN forwarding, FORWARD ACCEPT fallback, MSS clamp on tun+ AND egress, block-outside-dns + IPv6 redirect pushes, decoy self-signed fallback so nginx never breaks port-share, PKI perms 0750/0640 reload-safe
+- New: --proto tcp|udp|both + --port + --udp-port (stealth TCP 443 with decoy, fast UDP, or both with 2 .ovpn files). TUI ctrl+p cycles.
+- New: 3 login modes — password+cert (default), --no-password cert-only, --no-auth testing-only (insecure, needs --yes-i-know-insecure, TUI ctrl+o). TUI ctrl+n/ctrl+o.
+- New: --doctor smart diagnosis (read-only, AI-like hints) + --dns + --mtu/--mss flags, 12 health probes (services, ports, NAT, forwarding, MSS, conf, DNS, decoy, bundle)
+- New: Cloudflare guide everywhere (grey cloud DNS-only = VPN works, orange cloud proxied = VPN breaks) + --fallback DNS-bypass
+- Fixed: deps auto-install (ca-certificates check, apt-get update args, certbot lazy for domain mode)
+- Fixed: uninstall cleans tun+/all NICs + server-udp.conf
 - New: dependencies auto-install (openvpn, nginx, iptables, ufw, curl …) — no manual apt needed
 - New: full uninstall (TUI uninstall mode, --uninstall / --manage uninstall, backup kept, SSH never touched)
 

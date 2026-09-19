@@ -23,27 +23,53 @@ var wantPkgs = []string{
 	"openvpn", "openssl", "iptables", "iproute2", "nginx", "ufw", "curl", "ca-certificates",
 }
 
-var pkgForBin = map[string]string{
+// binForPkg maps apt package -> binary to probe. ca-certificates has no
+// binary; we check for the bundle file instead. iproute2 provides ip+ss.
+var binForPkg = map[string]string{
 	"openvpn":         "openvpn",
 	"openssl":         "openssl",
 	"iptables":        "iptables",
+	"iproute2":        "ip",
 	"nginx":           "nginx",
 	"ufw":             "ufw",
 	"curl":            "curl",
-	"ca-certificates": "ca-certificates",
+	"ca-certificates": "",
 }
 
 func (Dependencies) Check(c cfg.Config) Result {
 	var missing []string
-	for bin, pkg := range pkgForBin {
-		if _, err := exec.LookPath(bin); err != nil {
-			// iproute2 provides `ip`/`ss`, not a bin named iproute2
-			if bin == "iproute2" {
-				if _, err := exec.LookPath("ip"); err == nil {
-					continue
+	for pkg, bin := range binForPkg {
+		if pkg == "ca-certificates" {
+			if !fileExists("/etc/ssl/certs/ca-certificates.crt") {
+				// Also accept update-ca-certificates binary as present.
+				if _, err := exec.LookPath("update-ca-certificates"); err != nil {
+					missing = append(missing, pkg)
 				}
 			}
+			continue
+		}
+		if bin == "" {
+			continue
+		}
+		if _, err := exec.LookPath(bin); err != nil {
 			missing = append(missing, pkg)
+		}
+	}
+	// ss may live in iproute2 but some minimal images lack it; check too.
+	if _, err := exec.LookPath("ss"); err != nil {
+		if _, err2 := exec.LookPath("ip"); err2 != nil {
+			// already counted via iproute2
+		} else {
+			// ip present but ss missing -> still need iproute2 full
+			found := false
+			for _, m := range missing {
+				if m == "iproute2" {
+					found = true
+				}
+			}
+			if !found {
+				missing = append(missing, "iproute2")
+			}
 		}
 	}
 	if len(missing) == 0 {
@@ -69,15 +95,16 @@ func (Dependencies) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) e
 		return nil
 	}
 	var need []string
-	for bin, pkg := range pkgForBin {
-		if _, err := exec.LookPath(bin); err != nil {
-			if bin == "iproute2" {
-				if _, err := exec.LookPath("ip"); err == nil {
-					continue
+	for pkg, bin := range binForPkg {
+		if pkg == "ca-certificates" {
+			if !fileExists("/etc/ssl/certs/ca-certificates.crt") {
+				if _, err := exec.LookPath("update-ca-certificates"); err != nil {
+					need = append(need, pkg)
 				}
-				need = append(need, "iproute2")
-				continue
 			}
+			continue
+		}
+		if _, err := exec.LookPath(bin); err != nil {
 			need = append(need, pkg)
 		}
 	}
@@ -86,13 +113,22 @@ func (Dependencies) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) e
 		return nil
 	}
 	log.Info("installing: %s", strings.Join(need, ", "))
-	if err := Run(ctx, log, "apt-get", append([]string{"update"}, need...)...); err != nil {
-		// apt-get update is separate; try install even if update had warnings
-		_ = err
+	// Step 1: update package lists (no package args — old code passed
+	// packages to `apt-get update` which is invalid).
+	if err := Run(ctx, log, "apt-get", "update"); err != nil {
+		log.Dim("apt-get update had warnings, continuing to install anyway: " + err.Error())
 	}
 	args := append([]string{"install", "-y"}, need...)
 	if err := Run(ctx, log, "apt-get", args...); err != nil {
 		return err
+	}
+	// If domain mode, certbot helps get Let's Encrypt for the decoy site.
+	// Installed lazily so IP-only users don't pay the cost.
+	if c.Mode == cfg.ModeDomain {
+		if _, err := exec.LookPath("certbot"); err != nil {
+			log.Info("domain mode: installing certbot for free HTTPS certificate (optional, decoy works without it)")
+			_ = Run(ctx, log, "apt-get", "install", "-y", "certbot", "python3-certbot-nginx")
+		}
 	}
 	log.OK("dependencies installed")
 	return nil
