@@ -402,10 +402,15 @@ func (ServerConf) Apply(ctx context.Context, c cfg.Config, log *logx.Logger) err
 	// Single-proto: always server.conf (so old tooling keeps working).
 	wantUDP := proto == "udp"
 	backup(filepath.Join(serverDir, "server.conf"), log)
-	// Clean up stale split file when switching back to single proto.
-	if !wantUDP {
+	// Park (never delete) the split file when switching back to single proto.
+	// Old code used os.Remove here and a default `--proto tcp` run silently
+	// wiped a working UDP server (seen live: server-udp.conf gone, unit dead).
+	// Now we stop+disable the unit but keep the file, so switching back to
+	// --proto both is instant and no config is ever lost.
+	if !wantUDP && fileExists(filepath.Join(serverDir, "server-udp.conf")) {
 		_ = Run(ctx, log, "systemctl", "stop", "openvpn-server@server-udp")
-		_ = os.Remove(filepath.Join(serverDir, "server-udp.conf"))
+		_ = Run(ctx, log, "systemctl", "disable", "openvpn-server@server-udp")
+		log.Dim("parked server-udp.conf (unit stopped+disabled, file kept — re-enable anytime with --proto both)")
 	}
 	which := "tcp"
 	if wantUDP {

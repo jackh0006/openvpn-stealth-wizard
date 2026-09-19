@@ -17,7 +17,7 @@ import (
 	"github.com/jackh0006/openvpn-stealth-wizard/internal/tui"
 )
 
-const version = "0.5.1"
+const version = "0.5.2"
 
 func main() {
 	checkOnly := flag.Bool("check", false, "read-only health check, changes nothing")
@@ -57,7 +57,7 @@ func main() {
 	}
 
 	if *help {
-		fmt.Print(`openvpn-stealth-wizard v0.5.1: stealth VPN, guided setup. Like a 5-year-old guide + live logs.
+		fmt.Print(`openvpn-stealth-wizard v0.5.2: stealth VPN, guided setup. Like a 5-year-old guide + live logs.
 
 START HERE (pick one):
   sudo wizard                  pretty step-by-step mode (recommended: proto, auth, domain/IP, DNS, live logs)

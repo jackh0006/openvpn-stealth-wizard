@@ -1,5 +1,8 @@
 # Changelog — newest on top, plain words.
 
+## v0.5.2 (2026-09-19) — never wipe the other protocol
+- FIXED silent UDP wipe: a default `--proto tcp` run deleted server-udp.conf + killed UDP. Now single-proto parks (stop+disable) and keeps the file — switching back to `--proto both` is instant, no config ever lost. (Found live: UDP dead, only .bak-wizard left.)
+
 ## v0.5.1 (2026-09-19) — boot fix (VPS-tasted)
 - FIXED critical: sndbuf typo (ndbuf broke OpenVPN 2.5 start) + auth-before-server order (check-pass.sh missing on first boot). VPS-tasted: both TCP:443 + UDP:1194 active, tunnel ping OK, doctor all green.
 
