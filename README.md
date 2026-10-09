@@ -1,4 +1,4 @@
-# openvpn-stealth-wizard
+# OpenVPN Stealth Wizard
 
 ![linux-amd64](https://img.shields.io/badge/linux-amd64-42b983)
 ![linux-arm64](https://img.shields.io/badge/linux-arm64-42b983)

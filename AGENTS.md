@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# AGENTS.md — AI contributor guide for openvpn-stealth-wizard
+# AGENTS.md — AI contributor guide for OpenVPN Stealth Wizard
 
 You touch people's servers. Be conservative, be honest.
 

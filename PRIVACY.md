@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# openvpn-stealth-wizard — Privacy Policy
+# OpenVPN Stealth Wizard — Privacy Policy
 
 This tool configures **your** server. It collects nothing for the author.
 
