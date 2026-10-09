@@ -39,13 +39,15 @@ Manual way (if you don't trust pipes):
 
 ```sh
 # amd64 (most VPS servers) — file inside is named `wizard`
-curl -sSL -o vpn.tar.gz https://github.com/jackh0006/openvpn-stealth-wizard/releases/latest/download/openvpn-stealth-wizard_0.1.0_linux_amd64.tar.gz
-# arm64 (Ampere / Pi servers): same link with _arm64.tar.gz
+curl -sSL -o vpn.tar.gz https://github.com/jackh0006/openvpn-stealth-wizard/releases/latest/download/openvpn-stealth-wizard-Linux-amd64.tar.gz
+# arm64 (Ampere / Pi servers): same link with -Linux-arm64.tar.gz
 tar xzf vpn.tar.gz && chmod +x wizard && sudo mv wizard /usr/local/bin/
 wizard --version
 ```
 
-> Verify checksums against `checksums.txt` from the same release page.
+> ✅ These stable URLs never change between releases. Verify with
+> `SHA256SUMS.txt` from the same release page. Versioned copies
+> (`openvpn-stealth-wizard-<ver>-Linux-<arch>.tar.gz`) live beside them.
 
 Prerequisites: **Ubuntu 22.04/24.04**, **root**, a public IP, and (domain
 mode) a DNS `A` record pointing at the server. If your mobile carrier blocks
@@ -123,6 +125,22 @@ fingerprintable as OpenVPN by real DPI. Contents (AES-256-GCM), DNS
 (Cloudflare through the tunnel), and app identity stay hidden. Active
 probers get the decoy website. For DPI-proof stealth, wrap in
 stunnel/Shadowsocks (Phase 2).
+
+## 🥷 Why this wizard — scoreboard
+
+Same goal, reproducible. Legend: ✅ yes · ❌ no · 🔶 partial.
+
+| Need (your words) | This wizard | Raw OpenVPN configs | Consumer VPN app | How we prove it |
+| --- | :---: | :---: | :---: | --- |
+| 🚀 Guided TUI, zero guesswork | ✅ plan preview + live logs | ❌ | ✅ | `wizard --check`, `manage` mode |
+| 🕵️ Blends with HTTPS `:443` | ✅ decoy site + SNI routing | ❌ | 🔶 | `internal/` + `templates/`; ISP section above |
+| 🔐 Hardened crypto out of box | ✅ TLS 1.3 + `tls-crypt-v2` | 🔶 on you | 🔶 | Server templates, upstream OpenVPN |
+| 🩺 Doctor + fallback (DNS/IP) | ✅ `--fallback` | ❌ | — | `internal/check`, carrier-DNS handling |
+| 🖥️ amd64 + arm64 binaries | ✅ | 🔶 | ✅ | goreleaser matrix, `SHA256SUMS.txt` |
+| 🙈 Invisible to real DPI | ❌ fingerprintable | ❌ | ❌ | Stated above — wrap in stunnel/SS for more |
+| 🔍 Independent audit | 🔶 open, needs audit | — | ✅ big ones | `SECURITY.md` |
+
+What only it does: runbook-born TUI (3 auth modes, both protos, persistent NAT, MSS egress, block-DNS, decoy fallback) plus a read-only `--check` that changes nothing. What you need: Ubuntu 22.04/24.04, root, public IP, DNS `A` record for domain mode. No hype — see `SECURITY.md`.
 
 ## Build & release
 

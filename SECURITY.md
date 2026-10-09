@@ -4,7 +4,8 @@
 
 | Version | Supported |
 | ------- | --------- |
-| 0.1.x   | Yes       |
+| Current stable (see Releases) | Yes |
+| Older | Best-effort — upgrade and re-test |
 
 ## Reporting a Vulnerability
 

@@ -20,3 +20,16 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Versionless aliases keep install URLs stable forever (see README).
+      - name: Upload stable-name aliases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          cd dist
+          for f in openvpn-stealth-wizard-"$VER"-Linux-*.tar.gz; do
+            alias="${f/$VER-/}"
+            cp "$f" "$alias"
+          done
+          sha256sum openvpn-stealth-wizard-*.tar.gz > SHA256SUMS.txt
+          gh release upload "${GITHUB_REF_NAME}" --clobber openvpn-stealth-wizard-Linux-*.tar.gz SHA256SUMS.txt

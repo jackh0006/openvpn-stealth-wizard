@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+name: Strict boundary
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  strict:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret scan
+        run: |
+          grep -rn --exclude-dir=.git -E 'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' . --include='*.go' --include='*.md' --include='*.sh' --include='*.yaml' --include='*.yml' --include='*.ovpn' && { echo "private key material forbidden"; exit 1; }
+          grep -rniE 'ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}' . --exclude-dir=.git && { echo "token forbidden"; exit 1; }
+          echo "secrets: none found OK"
+      - name: No unverifiable claims
+        run: |
+          grep -rin 'unhackable\|NSA-proof\|zero bugs\|fully undetectable\|guaranteed anonymous\|100% anonymous\|DPI-proof' README.md SECURITY.md PRIVACY.md docs/ cmd/ internal/ 2>/dev/null | grep -vi 'never\|no \|not \|fingerprintable\|honest\|wrap in' && { echo "hype claim forbidden"; exit 1; }
+          echo "claims: honest OK"
+      - name: Stable install URLs (no pinned versions)
+        run: |
+          grep -rn 'releases/latest/download/.*_0\.[0-9]' README.md docs/ 2>/dev/null && { echo "pinned-version download URL forbidden (use stable aliases)"; exit 1; }
+          echo "install URLs: stable OK"
