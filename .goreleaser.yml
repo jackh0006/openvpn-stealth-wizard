@@ -11,6 +11,8 @@ builds:
     ldflags: [-s -w]
 archives:
   - formats: [tar.gz]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Canonical names (stable scheme, matches account convention):
+    #   openvpn-stealth-wizard-<ver>-Linux-amd64.tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
 checksum:
   name_template: checksums.txt
